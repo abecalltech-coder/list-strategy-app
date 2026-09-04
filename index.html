@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>リスト戦略システム</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>リスト戦略システム</h1>
+    <div class="header-right">
+      <span id="status" class="status">読み込み中...</span>
+      <button id="refresh-btn" class="btn-primary">🔄 再読み込み</button>
+    </div>
+  </header>
+
+  <section class="global-controls">
+    <div class="control-block">
+      <div class="control-label">対象シート</div>
+      <div id="sheet-selector" class="chip-row"></div>
+    </div>
+    <div class="control-block">
+      <div class="control-label">
+        都道府県で絞り込み
+        <button id="pref-select-all" class="btn-link">全選択</button>
+        <button id="pref-select-none" class="btn-link">全解除</button>
+      </div>
+      <div id="pref-filter" class="chip-row"></div>
+    </div>
+    <div class="control-block">
+      <div class="control-label">サマリー(都道府県×シート)の集計方法</div>
+      <div class="agg-controls">
+        <select id="agg-mode">
+          <option value="sum">数値列の合計</option>
+          <option value="count">件数(行数)</option>
+        </select>
+        <select id="agg-column"></select>
+      </div>
+    </div>
+  </section>
+
+  <nav class="main-tabs">
+    <button class="main-tab-btn active" data-tab="summary">サマリー(都道府県×シート)</button>
+    <button class="main-tab-btn" data-tab="detail">詳細データ</button>
+  </nav>
+
+  <main>
+    <section id="tab-summary" class="main-tab-panel active">
+      <div id="summary-panel"></div>
+    </section>
+
+    <section id="tab-detail" class="main-tab-panel">
+      <div id="detail-sheet-tabs" class="tab-row"></div>
+      <div id="detail-panel"></div>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
