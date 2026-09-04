@@ -7,7 +7,7 @@ window.APP_CONFIG = {
   spreadsheetId: "1tjuLmmWgGgkpe5dl6VKjJgSYbtyHtgK0xV_lG6Um3YM", // 「リスト元データ」
 
   // Google Cloud Consoleで発行したAPIキー(手順はREADME.md参照)
-  apiKey: "YOUR_API_KEY_HERE",
+  apiKey: "AIzaSyBSfcP4IhZH5dWs6wh-cVqVCxCCusA7Csw",
 
   // 読み込み対象から除外したいシート名(メモ用・空シートなど)
   excludeSheets: ["整理用"],
