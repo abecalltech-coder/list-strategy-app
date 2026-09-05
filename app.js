@@ -9,7 +9,8 @@ const CONFIG = window.APP_CONFIG;
 
 // 「有効結果」の定義: リストデータシートのF列〜AC列(0始まりの列インデックスで5〜28)の
 // 合計値を「有効結果」とする(列名ではなく列の位置で判定)。
-// トスアップ率・アポ率・追加列の％はすべてこの「有効結果」に対する割合(対有効)として計算する。
+// トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率・追加列の％は
+// すべてこの「有効結果」に対する割合(対有効)として計算する。
 // 有効率 = 有効結果 ÷ (不在 + 有効結果)。
 const VALID_RESULT_COL_START = 5; // F列(0始まり: A=0, B=1, C=2, D=3, E=4, F=5)
 const VALID_RESULT_COL_END = 28; // AC列(0始まり: ... Z=25, AA=26, AB=27, AC=28)
@@ -37,6 +38,9 @@ const state = {
     notCalledColumn: "未コール", // リストデータシートの中で「未コール」として使う列名(値をそのまま使用)
     tossupColumn: null, // トスアップ率の分子として使う列名(自動判定)
     appoColumn: null, // アポ率の分子として使う列名(自動判定)
+    approachNgColumn: null, // アプローチNG率の分子として使う列名(自動判定)
+    honshiNgColumn: null, // 主旨NG率の分子として使う列名(自動判定)
+    closingNgColumn: null, // クロージングNG率の分子として使う列名(自動判定)
     extraColumns: new Set(), // (現在は未使用。常に空)
     sort: { key: "remaining", dir: "desc" },
     tableSize: { height: null }, // リスト毎表示の表の手動リサイズ後の高さ(null=既定)
@@ -453,11 +457,15 @@ function refreshReportControls() {
   state.report.remainingColumn =
     remainingOptions.length === 0 ? null : remainingOptions.includes("残量") ? "残量" : remainingOptions[0];
 
-  // トスアップ率・アポ率の分子として使う列(リストデータ側、自動判定。見つからなければ「—」表示になる)
+  // トスアップ率・アポ率・各種NG率の分子として使う列(リストデータ側、自動判定。見つからなければ「—」表示になる)
   const listNumericOptions = getOtherColumnNames(listSheet, { numericOnly: true });
   state.report.tossupColumn = pickDefaultColumn(listNumericOptions, ["トスアップ"], ["トスアップ"], []) || "";
   state.report.appoColumn =
     pickDefaultColumn(listNumericOptions, ["アポ", "アポイント", "アポ数", "獲得アポ"], ["アポ"], ["禁"]) || "";
+  state.report.approachNgColumn = pickDefaultColumn(listNumericOptions, ["アプローチNG"], ["アプローチNG", "アプローチ"], []) || "";
+  state.report.honshiNgColumn = pickDefaultColumn(listNumericOptions, ["主旨NG"], ["主旨NG", "主旨"], []) || "";
+  state.report.closingNgColumn =
+    pickDefaultColumn(listNumericOptions, ["クロージングNG"], ["クロージングNG", "クロージング"], []) || "";
   state.report.extraColumns = new Set();
 }
 
@@ -782,18 +790,13 @@ function gradedBoldHtml(value, badMax, goodMin) {
   return color ? `<b style="color:${color};">${text}</b>` : `<b>${text}</b>`;
 }
 
-// 残量セルのHTML(ALL行は残量に応じたヒートマップ背景付き、都道府県内訳行は背景なし)
-function remainingCellHtml(obj, maxRemaining) {
-  const bg = maxRemaining === undefined ? "" : ` style="background:${heatColor(obj.remaining, maxRemaining)}"`;
-  return `<td class="count-cell"${bg}>${obj.remaining}</td>`;
-}
-
-// 残量・業種内訳など「列内での相対的な多い/少ない」を色分けする背景色。
+// 残量・業種内訳・分析タブの集計値など「列内での相対的な多い/少ない」を示す文字色。
 // 有効率・トスアップ率の評価色(gradeColor)と同じ、アンカー間をなめらかに補間する仕組みを使い、
 // その列の最大値に対する割合(0=最も低い 〜 1=最も高い)に応じて
-// 低い=赤(hue 0) → 普通(列内の中間)=緑(hue 120) → 高い=青(hue 240) のグラデーションにする。
-function heatColor(value, max) {
-  if (!value) return "transparent";
+// 低い=赤(hue 0) → 普通(列内の中間)=緑(hue 120) → 高い=青(hue 240) の文字色にする。
+// 値が0/無い場合はnullを返す(通常の文字色のまま、背景は一切付けない)。
+function heatTextColor(value, max) {
+  if (!value || max === undefined) return null;
   const ratio = Math.max(0, Math.min(1, value / max));
   const anchors = [
     { r: 0, h: 0 }, // 赤(低い)
@@ -812,7 +815,22 @@ function heatColor(value, max) {
   const span = hi.r - lo.r;
   const t = span === 0 ? 0 : (ratio - lo.r) / span;
   const hue = lo.h + (hi.h - lo.h) * t;
-  return `hsl(${hue.toFixed(0)}, 72%, 85%)`;
+  return `hsl(${hue.toFixed(0)}, 72%, 38%)`;
+}
+
+// 残量・業種内訳・分析タブの集計値セルの共通HTML(背景は付けず、文字色のみで相対的な高さを示す)。
+// max未指定(都道府県内訳行など基準が無い場合)は通常表示にする。
+function heatCellHtml(value, max) {
+  const v = value || 0;
+  const color = heatTextColor(v, max);
+  return color
+    ? `<td class="count-cell"><span style="color:${color}; font-weight:700;">${v}</span></td>`
+    : `<td class="count-cell">${v}</td>`;
+}
+
+// 残量セルのHTML(ALL行は列内での相対的な高さに応じた文字色付き、都道府県内訳行は通常表示)
+function remainingCellHtml(obj, maxRemaining) {
+  return heatCellHtml(obj.remaining, maxRemaining);
 }
 
 // 指定シートの中から、(リスト名, 都道府県)をキーに指定列の値を合算したMapを作る
@@ -868,13 +886,17 @@ function ratioOrNull(numerator, denominator) {
   return (numerator / denominator) * 100;
 }
 
-// remaining/absent/notCalled/tossup/appo/validCount/extra が入ったオブジェクトに
-// 有効率・トスアップ率・アポ率・追加列の対有効%を計算して追加する。
+// remaining/absent/notCalled/tossup/appo/approachNg/honshiNg/closingNg/validCount/extra が
+// 入ったオブジェクトに、有効率・トスアップ率・アポ率・各種NG率・追加列の対有効%を計算して追加する。
 function computeDerived(obj, extraCols) {
   // 有効率 = 有効結果 ÷ (不在 + 有効結果)
   obj.validRate = ratioOrNull(obj.validCount, obj.absent + obj.validCount);
   obj.tossupRate = ratioOrNull(obj.tossup, obj.validCount);
   obj.appoRate = ratioOrNull(obj.appo, obj.validCount);
+  // アプローチNG率・主旨NG率・クロージングNG率(いずれも対有効 = ÷有効結果)
+  obj.approachNgRate = ratioOrNull(obj.approachNg, obj.validCount);
+  obj.honshiNgRate = ratioOrNull(obj.honshiNg, obj.validCount);
+  obj.closingNgRate = ratioOrNull(obj.closingNg, obj.validCount);
   obj.extraPct = {};
   extraCols.forEach((c) => {
     obj.extraPct[c] = ratioOrNull(obj.extra[c], obj.validCount);
@@ -919,12 +941,18 @@ function computeAreaReport() {
   const notCalledCol = state.report.notCalledColumn;
   const tossupCol = state.report.tossupColumn || null;
   const appoCol = state.report.appoColumn || null;
+  const approachNgCol = state.report.approachNgColumn || null;
+  const honshiNgCol = state.report.honshiNgColumn || null;
+  const closingNgCol = state.report.closingNgColumn || null;
   const extraCols = Array.from(state.report.extraColumns);
   const industryNames = getIndustryNames(remainingSheet);
 
   const listColumnsNeeded = new Set([absentCol, notCalledCol, ...extraCols]);
   if (tossupCol) listColumnsNeeded.add(tossupCol);
   if (appoCol) listColumnsNeeded.add(appoCol);
+  if (approachNgCol) listColumnsNeeded.add(approachNgCol);
+  if (honshiNgCol) listColumnsNeeded.add(honshiNgCol);
+  if (closingNgCol) listColumnsNeeded.add(closingNgCol);
 
   const remainingMap = remainingCol ? buildValueMap(remainingSheet, [remainingCol]) : new Map();
   const listMap = buildValueMap(listSheet, Array.from(listColumnsNeeded));
@@ -933,7 +961,8 @@ function computeAreaReport() {
   const industryMap = industryNames.length ? buildValueMap(remainingSheet, industryNames) : new Map();
 
   const allKeys = new Set([...remainingMap.keys(), ...listMap.keys(), ...validResultMap.keys(), ...industryMap.keys()]);
-  const byList = new Map(); // listName -> Map(pref -> {remaining, absent, notCalled, tossup, appo, validCount, extra, industry})
+  // listName -> Map(pref -> {remaining, absent, notCalled, tossup, appo, approachNg, honshiNg, closingNg, validCount, extra, industry})
+  const byList = new Map();
 
   allKeys.forEach((key) => {
     const [listName, pref] = key.split(SEP);
@@ -943,17 +972,34 @@ function computeAreaReport() {
     const notCalled = listMap.get(key)?.[notCalledCol] || 0;
     const tossup = tossupCol ? listMap.get(key)?.[tossupCol] || 0 : 0;
     const appo = appoCol ? listMap.get(key)?.[appoCol] || 0 : 0;
+    const approachNg = approachNgCol ? listMap.get(key)?.[approachNgCol] || 0 : 0;
+    const honshiNg = honshiNgCol ? listMap.get(key)?.[honshiNgCol] || 0 : 0;
+    const closingNg = closingNgCol ? listMap.get(key)?.[closingNgCol] || 0 : 0;
     const validCount = validResultMap.get(key) || 0;
     const extra = {};
     extraCols.forEach((c) => (extra[c] = listMap.get(key)?.[c] || 0));
     const industry = {};
     industryNames.forEach((n) => (industry[n] = industryMap.get(key)?.[n] || 0));
-    byList.get(listName).set(pref, { remaining, absent, notCalled, tossup, appo, validCount, extra, industry });
+    byList
+      .get(listName)
+      .set(pref, { remaining, absent, notCalled, tossup, appo, approachNg, honshiNg, closingNg, validCount, extra, industry });
   });
 
   const listRows = [];
   byList.forEach((prefMap, listName) => {
-    const all = { remaining: 0, absent: 0, notCalled: 0, tossup: 0, appo: 0, validCount: 0, extra: {}, industry: {} };
+    const all = {
+      remaining: 0,
+      absent: 0,
+      notCalled: 0,
+      tossup: 0,
+      appo: 0,
+      approachNg: 0,
+      honshiNg: 0,
+      closingNg: 0,
+      validCount: 0,
+      extra: {},
+      industry: {},
+    };
     extraCols.forEach((c) => (all.extra[c] = 0));
     industryNames.forEach((n) => (all.industry[n] = 0));
     prefMap.forEach((v) => {
@@ -963,6 +1009,9 @@ function computeAreaReport() {
       all.notCalled += v.notCalled;
       all.tossup += v.tossup;
       all.appo += v.appo;
+      all.approachNg += v.approachNg;
+      all.honshiNg += v.honshiNg;
+      all.closingNg += v.closingNg;
       all.validCount += v.validCount;
       extraCols.forEach((c) => (all.extra[c] += v.extra[c]));
       industryNames.forEach((n) => (all.industry[n] += v.industry[n] || 0));
@@ -974,7 +1023,19 @@ function computeAreaReport() {
     listRows.push({ listName, all, prefRows });
   });
 
-  const grand = { remaining: 0, absent: 0, notCalled: 0, tossup: 0, appo: 0, validCount: 0, extra: {}, industry: {} };
+  const grand = {
+    remaining: 0,
+    absent: 0,
+    notCalled: 0,
+    tossup: 0,
+    appo: 0,
+    approachNg: 0,
+    honshiNg: 0,
+    closingNg: 0,
+    validCount: 0,
+    extra: {},
+    industry: {},
+  };
   extraCols.forEach((c) => (grand.extra[c] = 0));
   industryNames.forEach((n) => (grand.industry[n] = 0));
   listRows.forEach((lr) => {
@@ -983,6 +1044,9 @@ function computeAreaReport() {
     grand.notCalled += lr.all.notCalled;
     grand.tossup += lr.all.tossup;
     grand.appo += lr.all.appo;
+    grand.approachNg += lr.all.approachNg;
+    grand.honshiNg += lr.all.honshiNg;
+    grand.closingNg += lr.all.closingNg;
     grand.validCount += lr.all.validCount;
     extraCols.forEach((c) => (grand.extra[c] += lr.all.extra[c]));
     industryNames.forEach((n) => (grand.industry[n] += lr.all.industry[n] || 0));
@@ -991,7 +1055,18 @@ function computeAreaReport() {
 
   const sortKey = state.report.sort.key;
   const dirMul = state.report.sort.dir === "asc" ? 1 : -1;
-  const simpleKeys = ["remaining", "notCalled", "absent", "absent2", "validRate", "tossupRate", "appoRate"];
+  const simpleKeys = [
+    "remaining",
+    "notCalled",
+    "absent",
+    "absent2",
+    "validRate",
+    "tossupRate",
+    "appoRate",
+    "approachNgRate",
+    "honshiNgRate",
+    "closingNgRate",
+  ];
   // 残量が同数の場合の自動タイブレーク順(残量でソートしている時だけ適用)
   const TIE_BREAK_KEYS = ["validRate", "tossupRate", "appoRate"];
   const compareBy = (key, a, b) => {
@@ -1043,12 +1118,6 @@ function reportSortArrow(key) {
   return state.report.sort.dir === "asc" ? " ▲" : " ▼";
 }
 
-// 業種内訳セルのHTML(件数のみ。業種列内での相対値に応じてヒートマップ背景を付ける)
-function industryCellHtml(value, max) {
-  const v = value || 0;
-  const bg = max === undefined ? "" : ` style="background:${heatColor(v, max)}"`;
-  return `<td class="count-cell"${bg}>${v}</td>`;
-}
 
 function renderSummary() {
   const panel = $("#summary-panel");
@@ -1079,7 +1148,10 @@ function renderSummary() {
     `<span>有効結果 <b>${grand.validCount}</b></span>` +
     `<span>有効率 ${gradedBoldHtml(grand.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin)}</span>` +
     `<span>トスアップ率 ${gradedBoldHtml(grand.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin)}</span>` +
-    `<span>アポ率 <b>${formatPct(grand.appoRate)}</b></span>`;
+    `<span>アポ率 <b>${formatPct(grand.appoRate)}</b></span>` +
+    `<span>アプローチNG率 <b>${formatPct(grand.approachNgRate)}</b></span>` +
+    `<span>主旨NG率 <b>${formatPct(grand.honshiNgRate)}</b></span>` +
+    `<span>クロージングNG率 <b>${formatPct(grand.closingNgRate)}</b></span>`;
   panel.appendChild(grandBar);
 
   if (listRows.length === 0) {
@@ -1111,6 +1183,9 @@ function renderSummary() {
     { key: "validRate", label: "有効率" },
     { key: "tossupRate", label: "トスアップ率" },
     { key: "appoRate", label: "アポ率" },
+    { key: "approachNgRate", label: "アプローチNG率" },
+    { key: "honshiNgRate", label: "主旨NG率" },
+    { key: "closingNgRate", label: "クロージングNG率" },
     ...extraCols.map((c) => ({ key: c, label: c })),
     ...industryNames.map((n) => ({ key: n, label: n })),
   ];
@@ -1143,8 +1218,11 @@ function renderSummary() {
       gradedPctHtml(lr.all.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin) +
       gradedPctHtml(lr.all.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin) +
       `<td class="count-cell">${formatPct(lr.all.appoRate)}</td>` +
+      `<td class="count-cell">${formatPct(lr.all.approachNgRate)}</td>` +
+      `<td class="count-cell">${formatPct(lr.all.honshiNgRate)}</td>` +
+      `<td class="count-cell">${formatPct(lr.all.closingNgRate)}</td>` +
       extraCols.map((c) => extraCellHtml(lr.all.extra[c], lr.all.extraPct[c])).join("") +
-      industryNames.map((n) => industryCellHtml(lr.all.industry[n], maxIndustry[n])).join("");
+      industryNames.map((n) => heatCellHtml(lr.all.industry[n], maxIndustry[n])).join("");
     tr.addEventListener("click", () => {
       if (expanded) state.report.expandedLists.delete(lr.listName);
       else state.report.expandedLists.add(lr.listName);
@@ -1166,8 +1244,11 @@ function renderSummary() {
           gradedPctHtml(pr.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin) +
           gradedPctHtml(pr.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin) +
           `<td class="count-cell">${formatPct(pr.appoRate)}</td>` +
+          `<td class="count-cell">${formatPct(pr.approachNgRate)}</td>` +
+          `<td class="count-cell">${formatPct(pr.honshiNgRate)}</td>` +
+          `<td class="count-cell">${formatPct(pr.closingNgRate)}</td>` +
           extraCols.map((c) => extraCellHtml(pr.extra[c], pr.extraPct[c])).join("") +
-          industryNames.map((n) => industryCellHtml(pr.industry[n], maxIndustry[n])).join("");
+          industryNames.map((n) => heatCellHtml(pr.industry[n], maxIndustry[n])).join("");
         tbody.appendChild(subTr);
       });
     }
@@ -1184,9 +1265,9 @@ function renderSummary() {
   note.textContent =
     "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。未コール = リストデータの「未コール」列の値。不在2 = 不在 − 残量。" +
     "有効結果 = リストデータのF列〜AC列(繋がった結果)の合計。有効率 = 有効結果 ÷ (不在 + 有効結果)。" +
-    "トスアップ率・アポ率・追加列の(%)はすべて対有効(÷有効結果)。" +
+    "トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率・追加列の(%)はすべて対有効(÷有効結果)。列名に「アプローチNG」「主旨NG」「クロージングNG」を含む列を自動判定します(見つからない場合は「—」表示)。" +
     "右側の業種別の列(飲食・和食など)は、残量シートのE列以降の値をそのリスト(行をクリックすると都道府県ごと)に集計した残量の内訳です。" +
-    "残量・業種別のセルの背景色は、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで表示します。" +
+    "残量・業種別のセルは、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで文字色が変化します(背景色は付きません)。" +
     "列見出しクリックで昇順・降順に並び替えできます(業種列も含め、どの項目でも切替可能)。既定(残量順)の並びでは、残量が同数の行を有効率→トスアップ率→アポ率の順で自動的に並び替えます。" +
     "有効率(良い:50%以上/普通:30〜50%/悪い:30%以下)・トスアップ率(良い:5%以上/普通:4〜5%/悪い:4%以下)は評価に応じて文字色を赤〜緑のグラデーションで表示します。";
   panel.appendChild(note);
@@ -1427,8 +1508,8 @@ function renderAnalysis() {
     tr.innerHTML =
       `<td class="pref-cell"><span class="row-toggle">${expanded ? "▼" : "▶"}</span>${escapeHtml(lr.listName)}</td>` +
       `<td class="pref-cell">ALL</td>` +
-      `<td class="count-cell" style="background:${heatColor(lr.all.latestCumulative, maxCumulative)}">${lr.all.latestCumulative}</td>` +
-      columns.map((c) => industryCellHtml(lr.all.cols[c], maxCol[c])).join("");
+      heatCellHtml(lr.all.latestCumulative, maxCumulative) +
+      columns.map((c) => heatCellHtml(lr.all.cols[c], maxCol[c])).join("");
     tr.addEventListener("click", () => {
       if (expanded) state.analysis.expandedLists.delete(lr.listName);
       else state.analysis.expandedLists.add(lr.listName);
@@ -1444,7 +1525,7 @@ function renderAnalysis() {
           `<td class="pref-cell"></td>` +
           `<td class="pref-cell">${escapeHtml(pr.pref)}</td>` +
           `<td class="count-cell">${pr.latestCumulative}</td>` +
-          columns.map((c) => industryCellHtml(pr.cols[c], maxCol[c])).join("");
+          columns.map((c) => heatCellHtml(pr.cols[c], maxCol[c])).join("");
         tbody.appendChild(subTr);
       });
     }
@@ -1461,7 +1542,7 @@ function renderAnalysis() {
     "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。" +
     "「現在の累計」はトスアップの最新の累計値です。それ以外の列(週次表示なら「9/1週」のような週単位、曜日別表示なら「月」〜「日」)は、" +
     "その期間に新たに増えたトスアップの合計(増加分)です。上部の「週次」「曜日別」ボタンで表示単位を切り替えられます。" +
-    "セルの背景色は、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで表示します。" +
+    "セルは、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで文字色が変化します(背景色は付きません)。" +
     "列見出しクリックでその項目を基準に並び替えできます。";
   panel.appendChild(note);
 }
