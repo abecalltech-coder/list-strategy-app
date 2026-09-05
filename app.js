@@ -53,6 +53,13 @@ const state = {
     tableSize: { height: null },
     columnWidths: {},
   },
+  strategy: {
+    mode: "validRate", // "validRate"(有効率ベース) | "honshi"(主旨ベース・決裁者有効)
+    cool: 1, // 選択中のクール番号(CONFIG.coolsのid)
+    onlyRecommended: false, // 選択中クールにおすすめの業種のリストのみ表示するか
+    tableSize: { height: null },
+    columnWidths: {},
+  },
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -170,6 +177,8 @@ async function loadAll() {
     renderDetailTable();
     renderSummary();
     renderAnalysis();
+    renderStrategyCoolSwitcher();
+    renderStrategy();
   } catch (err) {
     console.error(err);
     setStatus(`エラー: ${err.message}`, true);
@@ -371,6 +380,7 @@ function afterIncludedSheetsChanged() {
   renderDetailTable();
   renderSummary();
   renderAnalysis();
+  renderStrategy();
 }
 
 function renderSheetSelector() {
@@ -505,6 +515,23 @@ $("#analysis-collapse-all").addEventListener("click", () => {
   renderAnalysis();
 });
 
+$("#strategy-mode-valid").addEventListener("click", () => {
+  state.strategy.mode = "validRate";
+  $("#strategy-mode-valid").classList.add("active");
+  $("#strategy-mode-honshi").classList.remove("active");
+  renderStrategy();
+});
+$("#strategy-mode-honshi").addEventListener("click", () => {
+  state.strategy.mode = "honshi";
+  $("#strategy-mode-honshi").classList.add("active");
+  $("#strategy-mode-valid").classList.remove("active");
+  renderStrategy();
+});
+$("#strategy-only-recommended").addEventListener("change", (e) => {
+  state.strategy.onlyRecommended = e.target.checked;
+  renderStrategy();
+});
+
 function renderGlobalPrefectureFilter() {
   const container = $("#pref-filter");
   container.innerHTML = "";
@@ -530,6 +557,7 @@ function updateGlobalPrefectureSelection() {
   renderDetailTable();
   renderSummary();
   renderAnalysis();
+  renderStrategy();
 }
 
 $("#pref-select-all").addEventListener("click", () => {
@@ -1544,6 +1572,202 @@ function renderAnalysis() {
     "その期間に新たに増えたトスアップの合計(増加分)です。上部の「週次」「曜日別」ボタンで表示単位を切り替えられます。" +
     "セルは、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで文字色が変化します(背景色は付きません)。" +
     "列見出しクリックでその項目を基準に並び替えできます。";
+  panel.appendChild(note);
+}
+
+// ------------------------------------------------------------
+// 描画: クール戦略タブ(残量があるリストを、有効率ベース/主旨ベースの優先順位で並べ、
+// 業種ごとの「繋がりやすい時間帯」の目安を添えて、クールごとのリスト選定を支援する)
+//
+// 大前提として「残量が残っているリスト」だけを対象にする。並び順は2通り:
+// ・有効率ベース: 有効率が高い順→(同率なら)トスアップ率が高い順(素直に繋がりやすいリスト)
+// ・主旨ベース(決裁者有効): 主旨NG率が高い順→(同率なら)クロージングNG率が高い順
+//   (有効率が低くても、決裁者への主旨説明・クロージングまで到達できているなら
+//    「話せているリスト」として評価する考え方)
+// 業種ごとの時間帯の目安(CONFIG.industryTimeSlotHints)は実際の架電時刻データに基づくもの
+// ではなく、一般的な業種特性からの仮説(目安)。各リストの中で残量が最も多い業種をそのリストの
+// 主要業種とみなし、選択中のクールに合っていれば「◎」で示す(並び順そのものは変えない)。
+// ------------------------------------------------------------
+
+function renderStrategyCoolSwitcher() {
+  const container = $("#strategy-cool-switcher");
+  if (!container) return;
+  container.innerHTML = "";
+  const cools = (CONFIG && CONFIG.cools) || [];
+  if (!cools.some((c) => c.id === state.strategy.cool)) {
+    state.strategy.cool = cools[0] ? cools[0].id : 1;
+  }
+  cools.forEach((cool) => {
+    const btn = document.createElement("button");
+    btn.className = "area-btn" + (state.strategy.cool === cool.id ? " active" : "");
+    btn.textContent = `${cool.label}(${cool.time})`;
+    btn.addEventListener("click", () => {
+      state.strategy.cool = cool.id;
+      renderStrategyCoolSwitcher();
+      renderStrategy();
+    });
+    container.appendChild(btn);
+  });
+}
+
+// 業種名からCONFIG.industryTimeSlotHintsに定義されたカテゴリを判定する(部分一致)。該当が無ければnull。
+function classifyIndustry(name) {
+  if (!name) return null;
+  const hints = (CONFIG && CONFIG.industryTimeSlotHints) || [];
+  for (const hint of hints) {
+    if ((hint.keywords || []).some((kw) => name.includes(kw))) return hint;
+  }
+  return null;
+}
+
+// リストの業種内訳オブジェクトから、残量が最も多い業種名を返す(無ければnull)
+function dominantIndustryName(industryObj) {
+  let best = null;
+  let bestVal = 0;
+  Object.entries(industryObj || {}).forEach(([name, val]) => {
+    if ((val || 0) > bestVal) {
+      bestVal = val;
+      best = name;
+    }
+  });
+  return best;
+}
+
+function computeStrategyReport() {
+  const base = computeAreaReport();
+  if (base.error) return { error: base.error };
+
+  const eligible = base.listRows.filter((lr) => lr.all.remaining > 0);
+  if (eligible.length === 0) {
+    return { error: "残量が残っているリストが見つかりません(残量0以下のリストのみのため対象外です)" };
+  }
+
+  const mode = state.strategy.mode; // "validRate"(有効率ベース) | "honshi"(主旨ベース)
+  const rows = eligible.map((lr) => {
+    const domName = dominantIndustryName(lr.all.industry);
+    return {
+      listName: lr.listName,
+      remaining: lr.all.remaining,
+      validRate: lr.all.validRate,
+      tossupRate: lr.all.tossupRate,
+      honshiNgRate: lr.all.honshiNgRate,
+      closingNgRate: lr.all.closingNgRate,
+      dominantIndustry: domName,
+      hint: classifyIndustry(domName),
+    };
+  });
+
+  const primaryKey = mode === "honshi" ? "honshiNgRate" : "validRate";
+  const secondaryKey = mode === "honshi" ? "closingNgRate" : "tossupRate";
+  const val = (r, key) => (r[key] === null || r[key] === undefined ? -Infinity : r[key]);
+  rows.sort((a, b) => {
+    const diff = val(b, primaryKey) - val(a, primaryKey);
+    if (diff !== 0) return diff;
+    return val(b, secondaryKey) - val(a, secondaryKey);
+  });
+
+  const cool = state.strategy.cool;
+  const displayRows = state.strategy.onlyRecommended
+    ? rows.filter((r) => r.hint && (r.hint.bestCools || []).includes(cool))
+    : rows;
+
+  return { mode, cool, rows: displayRows, totalEligible: rows.length };
+}
+
+// 「おすすめクール・メモ」セルのHTML。選択中クールに合っていれば「◎」を添える(背景色は付けない)。
+function coolHintCellHtml(hint, currentCool) {
+  if (!hint) {
+    return `<td class="pref-cell"><span class="muted-inline">業種不明(判定対象外)</span></td>`;
+  }
+  const cools = (CONFIG && CONFIG.cools) || [];
+  const labelOf = (id) => {
+    const c = cools.find((x) => x.id === id);
+    return c ? c.label.replace("クール", "") : id;
+  };
+  const best = (hint.bestCools || []).map(labelOf).join("・") || "—";
+  const isMatch = (hint.bestCools || []).includes(currentCool);
+  const mark = isMatch
+    ? `<span style="color:hsl(240,72%,38%); font-weight:700;">◎ このクールにおすすめ</span><br/>`
+    : "";
+  return `<td class="pref-cell">${mark}おすすめ: ${escapeHtml(best)}<div class="muted-inline">${escapeHtml(hint.note)}</div></td>`;
+}
+
+function renderStrategy() {
+  const panel = $("#strategy-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  if (!state.loaded) return;
+
+  const report = computeStrategyReport();
+  if (report.error) {
+    panel.innerHTML = `<p class="muted">${escapeHtml(report.error)}</p>`;
+    return;
+  }
+
+  const { rows, cool, mode } = report;
+  if (rows.length === 0) {
+    panel.innerHTML = `<p class="muted">条件に合うリストが見つかりません(「このクールにおすすめの業種のみ表示」のチェックを外すと全件表示されます)</p>`;
+    return;
+  }
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "table-scroll";
+  const table = document.createElement("table");
+  table.className = "pivot-table report-table";
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const headers = [
+    { key: "rank", label: "順位" },
+    { key: "listName", label: "リスト名" },
+    { key: "remaining", label: "残量" },
+    { key: "validRate", label: "有効率" },
+    { key: "tossupRate", label: "トスアップ率" },
+    { key: "honshiNgRate", label: "主旨NG率" },
+    { key: "closingNgRate", label: "クロージングNG率" },
+    { key: "dominantIndustry", label: "主要業種" },
+    { key: "hint", label: "おすすめクール・メモ" },
+  ];
+  headers.forEach((h) => {
+    const th = document.createElement("th");
+    th.textContent = h.label;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="count-cell">${i + 1}</td>` +
+      `<td class="pref-cell">${escapeHtml(r.listName)}</td>` +
+      `<td class="count-cell">${r.remaining}</td>` +
+      gradedPctHtml(r.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin) +
+      gradedPctHtml(r.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin) +
+      `<td class="count-cell">${formatPct(r.honshiNgRate)}</td>` +
+      `<td class="count-cell">${formatPct(r.closingNgRate)}</td>` +
+      `<td class="pref-cell">${r.dominantIndustry ? escapeHtml(r.dominantIndustry) : "—"}</td>` +
+      coolHintCellHtml(r.hint, cool);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+
+  setupResizableColumns(table, headRow, headers, state.strategy.columnWidths);
+  panel.appendChild(wrapTableForResize(tableWrap, state.strategy.tableSize));
+
+  const cools = (CONFIG && CONFIG.cools) || [];
+  const currentCool = cools.find((c) => c.id === cool);
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent =
+    "残量が残っているリストのみを対象に、順位はドラッグや列見出しクリックでは変わりません(戦略上の優先順位を示す固定の並びです)。" +
+    (mode === "honshi"
+      ? "「主旨ベース(決裁者有効)」= 主旨NG率が高い順→同率ならクロージングNG率が高い順で並べています(有効率が低くても、決裁者への主旨説明・クロージングまで到達できているリストを評価する考え方です)。"
+      : "「有効率ベース」= 有効率が高い順→同率ならトスアップ率が高い順で並べています(残量がある中での大前提の優先順位です)。") +
+    `現在選択中のクールは${currentCool ? `${currentCool.label}(${currentCool.time})` : "—"}です。` +
+    "「主要業種」は、そのリストの中で残量が最も多い業種です。「おすすめクール・メモ」は、その業種が一般的に繋がりやすいとされる時間帯の目安で、実際の架電時刻データではなく一般的な業種特性に基づく仮説です(config.jsのindustryTimeSlotHintsで調整できます)。選択中のクールに合う場合は「◎」を表示します。";
   panel.appendChild(note);
 }
 

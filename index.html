@@ -47,6 +47,7 @@
   <nav class="main-tabs">
     <button class="main-tab-btn" data-tab="analysis">分析</button>
     <button class="main-tab-btn active" data-tab="summary">集計</button>
+    <button class="main-tab-btn" data-tab="strategy">クール戦略</button>
     <button class="main-tab-btn" data-tab="detail">詳細データ</button>
   </nav>
 
@@ -67,6 +68,19 @@
         <button id="report-collapse-all" class="btn-link">すべて折りたたむ</button>
       </div>
       <div id="summary-panel"></div>
+    </section>
+
+    <section id="tab-strategy" class="main-tab-panel">
+      <div class="control-block">
+        <div class="control-label">クールを選択(このクールの時間帯に業種が合うリストをハイライトします)</div>
+        <div id="strategy-cool-switcher" class="chip-row"></div>
+      </div>
+      <div class="tab-row">
+        <button id="strategy-mode-valid" class="tab-btn active">有効率ベース</button>
+        <button id="strategy-mode-honshi" class="tab-btn">主旨ベース(決裁者有効)</button>
+        <label class="chip"><input type="checkbox" id="strategy-only-recommended" /> このクールにおすすめの業種のみ表示</label>
+      </div>
+      <div id="strategy-panel"></div>
     </section>
 
     <section id="tab-detail" class="main-tab-panel">
