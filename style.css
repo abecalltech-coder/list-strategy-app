@@ -370,22 +370,3 @@ th.sortable:hover { background: #f0f0f2; }
   font-weight: 400;
 }
 .report-table .report-pref-row { font-size: 12px; }
-
-.mismatch-flag {
-  color: #d92d20;
-  cursor: help;
-  font-size: 11px;
-}
-.report-table tr.row-mismatch.report-all-row { background: #fff3e0; }
-.report-table tr.row-mismatch.report-all-row:hover { background: #ffe9c7; }
-.report-table tr.row-mismatch.report-pref-row { background: #fff8ef; }
-
-.mismatch-banner {
-  background: #fff4e5;
-  border: 1px solid #ffca80;
-  color: #7a4a00;
-  padding: 8px 14px;
-  border-radius: 8px;
-  margin-bottom: 12px;
-  font-size: 12px;
-}
