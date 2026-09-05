@@ -16,9 +16,15 @@ const state = {
   includedSheets: new Set(),
   activeDetailSheet: null,
   activeTab: "summary",
-  pivotSort: { key: "total", dir: "desc" },
-  pivotAgg: { mode: "count", column: null },
   loaded: false,
+  report: {
+    area: null,
+    splitByPrefecture: true,
+    remainingColumn: null, // 残量シートの中で「残量」として使う列名
+    absentColumn: "不在", // リストデータシートの中で「不在」として使う列名
+    extraColumns: new Set(), // リストデータから追加表示する列名
+    sort: { key: "remaining", dir: "desc" },
+  },
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -124,10 +130,14 @@ async function loadAll() {
     }
     state.loaded = true;
     setStatus(`最終更新: ${new Date().toLocaleString("ja-JP")} (${titles.length}シート)`, false);
+    if (!state.report.area || !groupSheetsByArea().has(state.report.area)) {
+      const firstArea = Array.from(groupSheetsByArea().keys())[0] || null;
+      state.report.area = firstArea;
+    }
     renderAreaSwitcher();
     renderSheetSelector();
     renderGlobalPrefectureFilter();
-    refreshAggControls();
+    refreshReportControls();
     renderDetailSheetTabs();
     renderDetailTable();
     renderSummary();
@@ -293,7 +303,7 @@ function renderAreaSwitcher() {
   const areaMap = groupSheetsByArea();
 
   const allBtn = document.createElement("button");
-  allBtn.className = "area-btn";
+  allBtn.className = "area-btn" + (state.includedSheets.size === state.sheetOrder.length ? " active" : "");
   allBtn.textContent = "すべて";
   allBtn.addEventListener("click", () => {
     state.includedSheets = new Set(state.sheetOrder);
@@ -303,13 +313,17 @@ function renderAreaSwitcher() {
 
   areaMap.forEach((titles, area) => {
     const btn = document.createElement("button");
-    btn.className = "area-btn";
+    const isActive = state.report.area === area;
+    btn.className = "area-btn" + (isActive ? " active" : "");
     btn.textContent = area;
     btn.addEventListener("click", () => {
       state.includedSheets = new Set(titles);
       if (!titles.includes(state.activeDetailSheet)) {
         state.activeDetailSheet = titles[0];
       }
+      state.report.area = area;
+      state.report.remainingColumn = null;
+      state.report.extraColumns = new Set();
       afterIncludedSheetsChanged();
     });
     container.appendChild(btn);
@@ -317,8 +331,9 @@ function renderAreaSwitcher() {
 }
 
 function afterIncludedSheetsChanged() {
+  renderAreaSwitcher();
   renderSheetSelector();
-  refreshAggControls();
+  refreshReportControls();
   renderDetailSheetTabs();
   renderDetailTable();
   renderSummary();
@@ -349,10 +364,8 @@ function renderSheetSelector() {
         if (!state.includedSheets.has(state.activeDetailSheet)) {
           state.activeDetailSheet = state.sheetOrder.find((t) => state.includedSheets.has(t)) || state.activeDetailSheet;
         }
-        refreshAggControls();
         renderDetailSheetTabs();
         renderDetailTable();
-        renderSummary();
       });
       group.appendChild(label);
     });
@@ -362,60 +375,77 @@ function renderSheetSelector() {
 }
 
 // ------------------------------------------------------------
-// サマリーの集計方法(件数 / 数値列の合計)
+// エリアレポート(残量・未コール・不在)の対象シート・列の特定
 // ------------------------------------------------------------
 
-function getNumericColumnUnion() {
-  const names = new Set();
-  state.sheetOrder
-    .filter((t) => state.includedSheets.has(t))
-    .forEach((title) => {
-      const { headers } = state.sheets[title];
-      headers.forEach((h, idx) => {
-        if (detectColumnType(title, idx).type === "numeric") names.add(h);
-      });
-    });
-  const arr = Array.from(names);
-  arr.sort((a, b) => {
-    if (a === "合計") return -1;
-    if (b === "合計") return 1;
-    return a.localeCompare(b, "ja");
+// エリア内から「残量」を含むシート名、「リスト」を含む(残量ではない)シート名を探す
+function getAreaSheetPair(area) {
+  const areaMap = groupSheetsByArea();
+  const titles = areaMap.get(area) || [];
+  const remainingSheet = titles.find((t) => t.includes("残量")) || null;
+  const listSheet = titles.find((t) => t !== remainingSheet && t.includes("リスト")) || null;
+  return { listSheet, remainingSheet };
+}
+
+// 指定シートの中から、リスト名・都道府県以外の列名一覧を返す
+function getOtherColumnNames(title, { numericOnly } = {}) {
+  if (!title || !state.sheets[title]) return [];
+  const { headers } = state.sheets[title];
+  const names = [];
+  headers.forEach((h, idx) => {
+    if (idx === CONFIG.listNameColumnIndex || idx === CONFIG.prefectureColumnIndex) return;
+    if (numericOnly && detectColumnType(title, idx).type !== "numeric") return;
+    names.push(h);
   });
-  return arr;
+  return names;
 }
 
-function refreshAggControls() {
-  const options = getNumericColumnUnion();
-  const columnSelect = $("#agg-column");
-  const modeSelect = $("#agg-mode");
-  const prevColumn = state.pivotAgg.column;
+function refreshReportControls() {
+  const area = state.report.area;
+  const { listSheet, remainingSheet } = getAreaSheetPair(area);
 
-  if (options.length === 0) {
-    state.pivotAgg.mode = "count";
-    state.pivotAgg.column = null;
-    modeSelect.value = "count";
-    columnSelect.innerHTML = `<option value="">(数値列なし)</option>`;
-    columnSelect.disabled = true;
-    return;
+  // 残量として使う列
+  const remainingSelect = $("#report-remaining-column");
+  const remainingOptions = getOtherColumnNames(remainingSheet, { numericOnly: true });
+  if (remainingOptions.length === 0) {
+    remainingSelect.innerHTML = `<option value="">(数値列なし)</option>`;
+    remainingSelect.disabled = true;
+    state.report.remainingColumn = null;
+  } else {
+    remainingSelect.disabled = false;
+    remainingSelect.innerHTML = remainingOptions.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+    let keep = state.report.remainingColumn;
+    if (!remainingOptions.includes(keep)) {
+      keep = remainingOptions.includes("残量") ? "残量" : remainingOptions[0];
+    }
+    remainingSelect.value = keep;
+    state.report.remainingColumn = keep;
   }
 
-  columnSelect.disabled = false;
-  columnSelect.innerHTML = options.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-  const keep = options.includes(prevColumn) ? prevColumn : options[0];
-  columnSelect.value = keep;
-  state.pivotAgg.column = keep;
-  if (!prevColumn) {
-    state.pivotAgg.mode = "sum";
-  }
-  modeSelect.value = state.pivotAgg.mode;
+  // 表示する追加列(リストデータの列。「不在」は固定表示のため除外)
+  const extraContainer = $("#report-extra-columns");
+  const extraOptions = getOtherColumnNames(listSheet, { numericOnly: true }).filter((n) => n !== state.report.absentColumn);
+  extraContainer.innerHTML = "";
+  extraOptions.forEach((name) => {
+    const label = document.createElement("label");
+    label.className = "cat-option";
+    const checked = state.report.extraColumns.has(name);
+    label.innerHTML = `<input type="checkbox" ${checked ? "checked" : ""}/> <span>${escapeHtml(name)}</span>`;
+    label.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) state.report.extraColumns.add(name);
+      else state.report.extraColumns.delete(name);
+      renderSummary();
+    });
+    extraContainer.appendChild(label);
+  });
 }
 
-$("#agg-mode").addEventListener("change", (e) => {
-  state.pivotAgg.mode = e.target.value;
+$("#report-split-pref").addEventListener("change", (e) => {
+  state.report.splitByPrefecture = e.target.checked;
   renderSummary();
 });
-$("#agg-column").addEventListener("change", (e) => {
-  state.pivotAgg.column = e.target.value;
+$("#report-remaining-column").addEventListener("change", (e) => {
+  state.report.remainingColumn = e.target.value;
   renderSummary();
 });
 
@@ -632,74 +662,137 @@ function renderDetailTable() {
 }
 
 // ------------------------------------------------------------
-// 描画: サマリー(都道府県×シート ヒートマップ)
+// 描画: サマリー(エリアレポート — 残量・未コール・不在)
 // ------------------------------------------------------------
 
-function computePivot() {
-  const sheets = state.sheetOrder.filter((t) => state.includedSheets.has(t));
-  const prefSet = new Set();
-  const matrix = {}; // pref -> sheet -> count/sum
-  const mode = state.pivotAgg.mode;
-  const aggColumn = state.pivotAgg.column;
+function heatColor(value, max) {
+  if (!value) return "transparent";
+  const ratio = Math.min(1, value / max);
+  const lightness = 92 - ratio * 47; // 92% (薄い) -> 45% (濃い)
+  return `hsl(6, 85%, ${lightness}%)`;
+}
 
-  sheets.forEach((title) => {
-    const rowObjs = getFilteredRows(title, { skipGlobalPrefecture: true });
-    const headers = state.sheets[title].headers;
-    const aggColIdx = mode === "sum" && aggColumn ? headers.indexOf(aggColumn) : -1;
-    rowObjs.forEach(({ cells }) => {
-      const pref = String(cells[CONFIG.prefectureColumnIndex] ?? "");
-      if (!pref) return;
-      if (state.globalPrefectures.size > 0 && !state.globalPrefectures.has(pref)) return;
-      prefSet.add(pref);
-      matrix[pref] = matrix[pref] || {};
-      let inc = 1;
-      if (mode === "sum") {
-        if (aggColIdx === -1) {
-          inc = 0; // このシートには集計対象の列が無い
-        } else {
-          const v = parseFloat(cells[aggColIdx]);
-          inc = isNaN(v) ? 0 : v;
-        }
-      }
-      matrix[pref][title] = (matrix[pref][title] || 0) + inc;
+// 指定シートの中から、(リスト名, 都道府県)をキーに指定列の値を合算したMapを作る
+function buildValueMap(title, columnNames) {
+  const map = new Map();
+  if (!title || !state.sheets[title] || columnNames.length === 0) return map;
+  const { headers, rows } = state.sheets[title];
+  const colIndexes = columnNames.map((name) => headers.indexOf(name));
+  rows.forEach((cells) => {
+    const listName = String(cells[CONFIG.listNameColumnIndex] ?? "");
+    const pref = String(cells[CONFIG.prefectureColumnIndex] ?? "");
+    if (!listName || !pref) return;
+    const key = listName + " " + pref;
+    if (!map.has(key)) {
+      const obj = {};
+      columnNames.forEach((n) => (obj[n] = 0));
+      map.set(key, obj);
+    }
+    const obj = map.get(key);
+    columnNames.forEach((name, i) => {
+      const idx = colIndexes[i];
+      if (idx === -1) return;
+      const v = parseFloat(cells[idx]);
+      obj[name] += isNaN(v) ? 0 : v;
     });
   });
+  return map;
+}
 
-  const prefs = Array.from(prefSet);
-  const rows = prefs.map((pref) => {
-    const counts = sheets.map((t) => matrix[pref]?.[t] || 0);
-    const total = counts.reduce((a, b) => a + b, 0);
-    return { pref, counts, total };
+function computeAreaReport() {
+  const area = state.report.area;
+  if (!area) return { error: "エリアがありません" };
+
+  const { listSheet, remainingSheet } = getAreaSheetPair(area);
+  if (!listSheet && !remainingSheet) {
+    return { error: `エリア「${area}」に「リストデータ」または「残量」という名前のシートが見つかりません` };
+  }
+
+  const remainingCol = state.report.remainingColumn;
+  const absentCol = state.report.absentColumn;
+  const extraCols = Array.from(state.report.extraColumns);
+
+  const remainingMap = remainingCol ? buildValueMap(remainingSheet, [remainingCol]) : new Map();
+  const listMap = buildValueMap(listSheet, [absentCol, ...extraCols]);
+
+  const allKeys = new Set([...remainingMap.keys(), ...listMap.keys()]);
+  const byList = new Map(); // listName -> Map(pref -> {remaining, absent, notCalled, extra})
+
+  allKeys.forEach((key) => {
+    const [listName, pref] = key.split(" ");
+    if (!byList.has(listName)) byList.set(listName, new Map());
+    const remaining = remainingMap.get(key)?.[remainingCol] || 0;
+    const absent = listMap.get(key)?.[absentCol] || 0;
+    const notCalled = remaining - absent;
+    const extra = {};
+    extraCols.forEach((c) => (extra[c] = listMap.get(key)?.[c] || 0));
+    byList.get(listName).set(pref, { remaining, absent, notCalled, extra });
   });
 
-  const sortKey = state.pivotSort.key;
-  const dirMul = state.pivotSort.dir === "asc" ? 1 : -1;
-  rows.sort((a, b) => {
+  const listRows = [];
+  byList.forEach((prefMap, listName) => {
+    const all = { remaining: 0, absent: 0, notCalled: 0, extra: {} };
+    extraCols.forEach((c) => (all.extra[c] = 0));
+    prefMap.forEach((v) => {
+      all.remaining += v.remaining;
+      all.absent += v.absent;
+      all.notCalled += v.notCalled;
+      extraCols.forEach((c) => (all.extra[c] += v.extra[c]));
+    });
+    const prefRows = Array.from(prefMap.entries())
+      .map(([pref, v]) => ({ pref, ...v }))
+      .sort((a, b) => a.pref.localeCompare(b.pref, "ja"));
+    listRows.push({ listName, all, prefRows });
+  });
+
+  const grand = { remaining: 0, absent: 0, notCalled: 0, extra: {} };
+  extraCols.forEach((c) => (grand.extra[c] = 0));
+  listRows.forEach((lr) => {
+    grand.remaining += lr.all.remaining;
+    grand.absent += lr.all.absent;
+    grand.notCalled += lr.all.notCalled;
+    extraCols.forEach((c) => (grand.extra[c] += lr.all.extra[c]));
+  });
+
+  const sortKey = state.report.sort.key;
+  const dirMul = state.report.sort.dir === "asc" ? 1 : -1;
+  listRows.sort((a, b) => {
+    if (sortKey === "listName") return a.listName.localeCompare(b.listName, "ja") * dirMul;
     let av, bv;
-    if (sortKey === "total") {
-      av = a.total;
-      bv = b.total;
-    } else if (sortKey === "pref") {
-      return a.pref.localeCompare(b.pref, "ja") * dirMul;
+    if (sortKey === "remaining") {
+      av = a.all.remaining;
+      bv = b.all.remaining;
+    } else if (sortKey === "notCalled") {
+      av = a.all.notCalled;
+      bv = b.all.notCalled;
+    } else if (sortKey === "absent") {
+      av = a.all.absent;
+      bv = b.all.absent;
     } else {
-      const i = sheets.indexOf(sortKey);
-      av = a.counts[i] || 0;
-      bv = b.counts[i] || 0;
+      av = a.all.extra[sortKey] || 0;
+      bv = b.all.extra[sortKey] || 0;
     }
     return (av - bv) * dirMul;
   });
 
-  const maxCell = Math.max(1, ...rows.flatMap((r) => r.counts));
-  const maxTotal = Math.max(1, ...rows.map((r) => r.total));
-
-  return { sheets, rows, maxCell, maxTotal };
+  return { area, listSheet, remainingSheet, listRows, grand, extraCols };
 }
 
-function heatColor(value, max) {
-  if (value === 0) return "transparent";
-  const ratio = Math.min(1, value / max);
-  const lightness = 92 - ratio * 47; // 92% (薄い) -> 45% (濃い)
-  return `hsl(6, 85%, ${lightness}%)`;
+function toggleReportSort(key) {
+  const s = state.report.sort;
+  if (s.key !== key) {
+    state.report.sort = { key, dir: "desc" };
+  } else if (s.dir === "desc") {
+    state.report.sort = { key, dir: "asc" };
+  } else {
+    state.report.sort = { key: "remaining", dir: "desc" };
+  }
+  renderSummary();
+}
+
+function reportSortArrow(key) {
+  if (state.report.sort.key !== key) return "";
+  return state.report.sort.dir === "asc" ? " ▲" : " ▼";
 }
 
 function renderSummary() {
@@ -707,65 +800,91 @@ function renderSummary() {
   panel.innerHTML = "";
   if (!state.loaded) return;
 
-  const { sheets, rows, maxCell, maxTotal } = computePivot();
+  const report = computeAreaReport();
+  if (report.error) {
+    panel.innerHTML = `<p class="muted">${escapeHtml(report.error)}</p>`;
+    return;
+  }
+  const { listRows, grand, extraCols } = report;
 
-  if (sheets.length === 0) {
-    panel.innerHTML = `<p class="muted">上部でシートを選択してください</p>`;
+  if (!state.report.remainingColumn) {
+    panel.innerHTML = `<p class="muted">上の「残量として使う列」を選択してください(残量シートに数値列が見つかりませんでした)</p>`;
     return;
   }
-  if (rows.length === 0) {
-    panel.innerHTML = `<p class="muted">条件に合うデータがありません</p>`;
+
+  // --- エリア全体のALL ---
+  const grandBar = document.createElement("div");
+  grandBar.className = "grand-total-bar";
+  grandBar.innerHTML =
+    `<span class="grand-label">${escapeHtml(state.report.area)} ALL</span>` +
+    `<span>残量 <b>${grand.remaining}</b></span>` +
+    `<span>未コール <b>${grand.notCalled}</b></span>` +
+    `<span>不在 <b>${grand.absent}</b></span>`;
+  panel.appendChild(grandBar);
+
+  if (listRows.length === 0) {
+    panel.innerHTML += `<p class="muted">データがありません</p>`;
     return;
   }
+
+  const maxRemaining = Math.max(1, ...listRows.map((r) => r.all.remaining));
 
   const tableWrap = document.createElement("div");
   tableWrap.className = "table-scroll";
   const table = document.createElement("table");
-  table.className = "pivot-table";
+  table.className = "pivot-table report-table";
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  const prefTh = document.createElement("th");
-  prefTh.textContent = "都道府県";
-  prefTh.className = "sortable";
-  prefTh.addEventListener("click", () => togglePivotSort("pref"));
-  headRow.appendChild(prefTh);
-
-  sheets.forEach((title) => {
+  const headers = [
+    { key: "listName", label: "リスト名" },
+    { key: "pref", label: "都道府県" },
+    { key: "remaining", label: "残量" },
+    { key: "notCalled", label: "未コール" },
+    { key: "absent", label: "不在" },
+    ...extraCols.map((c) => ({ key: c, label: c })),
+  ];
+  headers.forEach((h) => {
     const th = document.createElement("th");
-    th.textContent = title + sortArrow(title);
-    th.className = "sortable";
-    th.addEventListener("click", () => togglePivotSort(title));
+    if (h.key === "pref") {
+      th.textContent = h.label;
+    } else {
+      th.textContent = h.label + reportSortArrow(h.key);
+      th.className = "sortable";
+      th.addEventListener("click", () => toggleReportSort(h.key));
+    }
     headRow.appendChild(th);
   });
-  const totalTh = document.createElement("th");
-  totalTh.textContent = "合計" + sortArrow("total");
-  totalTh.className = "sortable";
-  totalTh.addEventListener("click", () => togglePivotSort("total"));
-  headRow.appendChild(totalTh);
   thead.appendChild(headRow);
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
-  rows.forEach((r) => {
+  listRows.forEach((lr) => {
     const tr = document.createElement("tr");
-    const prefTd = document.createElement("td");
-    prefTd.textContent = r.pref;
-    prefTd.className = "pref-cell";
-    tr.appendChild(prefTd);
-    r.counts.forEach((c) => {
-      const td = document.createElement("td");
-      td.textContent = c || "";
-      td.style.background = heatColor(c, maxCell);
-      td.className = "count-cell";
-      tr.appendChild(td);
-    });
-    const totalTd = document.createElement("td");
-    totalTd.textContent = r.total;
-    totalTd.style.background = heatColor(r.total, maxTotal);
-    totalTd.className = "count-cell total-cell";
-    tr.appendChild(totalTd);
+    tr.className = "report-all-row";
+    tr.innerHTML =
+      `<td class="pref-cell">${escapeHtml(lr.listName)}</td>` +
+      `<td class="pref-cell">ALL</td>` +
+      `<td class="count-cell" style="background:${heatColor(lr.all.remaining, maxRemaining)}">${lr.all.remaining}</td>` +
+      `<td class="count-cell">${lr.all.notCalled}</td>` +
+      `<td class="count-cell">${lr.all.absent}</td>` +
+      extraCols.map((c) => `<td class="count-cell">${lr.all.extra[c] || 0}</td>`).join("");
     tbody.appendChild(tr);
+
+    if (state.report.splitByPrefecture) {
+      lr.prefRows.forEach((pr) => {
+        const subTr = document.createElement("tr");
+        subTr.className = "report-pref-row";
+        subTr.innerHTML =
+          `<td class="pref-cell"></td>` +
+          `<td class="pref-cell">${escapeHtml(pr.pref)}</td>` +
+          `<td class="count-cell">${pr.remaining}</td>` +
+          `<td class="count-cell">${pr.notCalled}</td>` +
+          `<td class="count-cell">${pr.absent}</td>` +
+          extraCols.map((c) => `<td class="count-cell">${pr.extra[c] || 0}</td>`).join("");
+        tbody.appendChild(subTr);
+      });
+    }
   });
   table.appendChild(tbody);
   tableWrap.appendChild(table);
@@ -773,30 +892,9 @@ function renderSummary() {
 
   const note = document.createElement("p");
   note.className = "muted";
-  const aggDesc =
-    state.pivotAgg.mode === "sum" && state.pivotAgg.column
-      ? `「${state.pivotAgg.column}」列の合計値`
-      : "現在のフィルタ条件に一致した件数";
   note.textContent =
-    `セルの数値は、各シートの現在のフィルタ条件に一致した行についての${aggDesc}です。` +
-    "詳細データタブでシートごとに条件(ステータス等)を絞ると、この表がその条件での都道府県別の熱さに変わります。列見出しをクリックすると並び替えできます。";
+    "行はリスト名(ALL=そのエリア内の全都道府県合計)。未コール = 残量 − 不在。列見出しクリックでALL行を並び替えできます。";
   panel.appendChild(note);
-}
-
-function sortArrow(key) {
-  if (state.pivotSort.key !== key) return "";
-  return state.pivotSort.dir === "asc" ? " ▲" : " ▼";
-}
-
-function togglePivotSort(key) {
-  if (state.pivotSort.key !== key) {
-    state.pivotSort = { key, dir: "desc" };
-  } else if (state.pivotSort.dir === "desc") {
-    state.pivotSort = { key, dir: "asc" };
-  } else {
-    state.pivotSort = { key: "total", dir: "desc" };
-  }
-  renderSummary();
 }
 
 // ------------------------------------------------------------
