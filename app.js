@@ -32,7 +32,7 @@ const state = {
   loaded: false,
   report: {
     area: null,
-    splitByPrefecture: true,
+    expandedLists: new Set(), // 都道府県の内訳を開いているリスト名(ベースはALL行のみ表示)
     remainingColumn: null, // 残量シートの中で「残量」として使う列名
     absentColumn: "不在", // リストデータシートの中で「不在」として使う列名
     totalColumn: null, // 有効率の分母(リスト累計数)として使う列名。null=未初期化, ""=未選択, 文字列=列名
@@ -343,6 +343,7 @@ function renderAreaSwitcher() {
       state.report.tossupColumn = null;
       state.report.appoColumn = null;
       state.report.extraColumns = new Set();
+      state.report.expandedLists = new Set();
       afterIncludedSheetsChanged();
     });
     container.appendChild(btn);
@@ -503,8 +504,15 @@ function refreshReportControls() {
   });
 }
 
-$("#report-split-pref").addEventListener("change", (e) => {
-  state.report.splitByPrefecture = e.target.checked;
+$("#report-expand-all").addEventListener("click", () => {
+  const report = computeAreaReport();
+  if (!report.error) {
+    state.report.expandedLists = new Set(report.listRows.map((lr) => lr.listName));
+  }
+  renderSummary();
+});
+$("#report-collapse-all").addEventListener("click", () => {
+  state.report.expandedLists = new Set();
   renderSummary();
 });
 $("#report-remaining-column").addEventListener("change", (e) => {
@@ -913,10 +921,9 @@ function toggleReportSort(key) {
   const s = state.report.sort;
   if (s.key !== key) {
     state.report.sort = { key, dir: "desc" };
-  } else if (s.dir === "desc") {
-    state.report.sort = { key, dir: "asc" };
   } else {
-    state.report.sort = { key: "remaining", dir: "desc" };
+    // 同じ項目を再クリックした場合は昇順・降順を交互に切り替える(どの項目でも上限なく切替可能)
+    state.report.sort = { key, dir: s.dir === "desc" ? "asc" : "desc" };
   }
   renderSummary();
 }
@@ -998,10 +1005,11 @@ function renderSummary() {
 
   const tbody = document.createElement("tbody");
   listRows.forEach((lr) => {
+    const expanded = state.report.expandedLists.has(lr.listName);
     const tr = document.createElement("tr");
     tr.className = "report-all-row";
     tr.innerHTML =
-      `<td class="pref-cell">${escapeHtml(lr.listName)}</td>` +
+      `<td class="pref-cell"><span class="row-toggle">${expanded ? "▼" : "▶"}</span>${escapeHtml(lr.listName)}</td>` +
       `<td class="pref-cell">ALL</td>` +
       `<td class="count-cell" style="background:${heatColor(lr.all.remaining, maxRemaining)}">${lr.all.remaining}</td>` +
       `<td class="count-cell">${lr.all.notCalled}</td>` +
@@ -1010,9 +1018,14 @@ function renderSummary() {
       `<td class="count-cell">${formatPct(lr.all.tossupRate)}</td>` +
       `<td class="count-cell">${formatPct(lr.all.appoRate)}</td>` +
       extraCols.map((c) => extraCellHtml(lr.all.extra[c], lr.all.extraPct[c])).join("");
+    tr.addEventListener("click", () => {
+      if (expanded) state.report.expandedLists.delete(lr.listName);
+      else state.report.expandedLists.add(lr.listName);
+      renderSummary();
+    });
     tbody.appendChild(tr);
 
-    if (state.report.splitByPrefecture) {
+    if (expanded) {
       lr.prefRows.forEach((pr) => {
         const subTr = document.createElement("tr");
         subTr.className = "report-pref-row";
@@ -1037,9 +1050,10 @@ function renderSummary() {
   const note = document.createElement("p");
   note.className = "muted";
   note.textContent =
-    "行はリスト名(ALL=そのエリア内の全都道府県合計)。未コール = 残量 − 不在。有効率 = 残量 ÷ リスト累計数(上の「リスト累計数として使う列」)。" +
+    "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。未コール = 残量 − 不在。" +
+    "有効率 = 残量 ÷ リスト累計数(上の「リスト累計数として使う列」)。" +
     "有効数 = 現アナ・決裁者不在・各種NG・見込みA/B/C・対象外各種・アポ禁など21項目の合計。トスアップ率・アポ率・追加列の(%)はすべて対有効(÷有効数)。" +
-    "列見出しクリックでALL行を並び替えできます。";
+    "列見出しクリックで昇順・降順に並び替えできます(どの項目でも切替可能)。";
   panel.appendChild(note);
 }
 

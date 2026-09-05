@@ -356,7 +356,14 @@ th.sortable:hover { background: #f0f0f2; }
 .grand-label { font-weight: 700; font-size: 14px; }
 .grand-total-bar b { font-size: 15px; }
 
-.report-table .report-all-row { font-weight: 600; background: #fafafa; }
+.report-table .report-all-row { font-weight: 600; background: #fafafa; cursor: pointer; }
+.report-table .report-all-row:hover { background: #f0f0f2; }
+.row-toggle {
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+  font-size: 10px;
+}
 .report-table .report-pref-row td:first-child,
 .report-table .report-pref-row td:nth-child(2) {
   color: var(--muted);
