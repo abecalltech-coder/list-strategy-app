@@ -262,3 +262,97 @@ th.sortable:hover { background: #f0f0f2; }
   font-size: 12px;
   background: #fff;
 }
+
+.area-btn {
+  background: #fff;
+  border: 1px solid var(--border);
+  padding: 5px 14px;
+  border-radius: 14px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.area-btn:hover { background: #f0f0f2; border-color: var(--accent); }
+
+.sheet-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+}
+.sheet-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: #eef0f4;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-right: 2px;
+}
+
+.tab-area-label {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 0 4px 0 10px;
+}
+.tab-area-label:first-child { padding-left: 0; }
+
+.report-inline-label {
+  font-size: 12px;
+  color: var(--muted);
+  align-self: center;
+}
+
+.col-picker {
+  position: relative;
+}
+.col-picker summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+}
+.col-picker summary::-webkit-details-marker { display: none; }
+.col-picker-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 180px;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.grand-total-bar {
+  display: flex;
+  gap: 20px;
+  align-items: baseline;
+  background: #fff7f5;
+  border: 1px solid #f3d9d2;
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.grand-label { font-weight: 700; font-size: 14px; }
+.grand-total-bar b { font-size: 15px; }
+
+.report-table .report-all-row { font-weight: 600; background: #fafafa; }
+.report-table .report-pref-row td:first-child,
+.report-table .report-pref-row td:nth-child(2) {
+  color: var(--muted);
+  font-weight: 400;
+}
+.report-table .report-pref-row { font-size: 12px; }
