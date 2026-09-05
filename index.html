@@ -21,8 +21,11 @@
       <div id="area-switcher" class="chip-row"></div>
     </div>
     <div class="control-block">
-      <div class="control-label">対象シート(個別に組み合わせて選択も可能・サマリーと詳細データ両方に反映)</div>
-      <div id="sheet-selector" class="chip-row"></div>
+      <div class="control-label">対象シート(個別に組み合わせて選択も可能・集計と詳細データ両方に反映)</div>
+      <details class="col-picker">
+        <summary>シートを選択 ▾</summary>
+        <div id="sheet-selector" class="col-picker-panel"></div>
+      </details>
     </div>
     <div class="control-block">
       <div class="control-label">
@@ -30,34 +33,26 @@
         <button id="pref-select-all" class="btn-link">全選択</button>
         <button id="pref-select-none" class="btn-link">全解除</button>
       </div>
-      <div id="pref-filter" class="chip-row"></div>
-    </div>
-    <div class="control-block">
-      <div class="control-label">サマリー(エリアレポート)の設定</div>
-      <div class="agg-controls">
-        <button id="report-expand-all" class="btn-link">すべて展開</button>
-        <button id="report-collapse-all" class="btn-link">すべて折りたたむ</button>
-        <span class="report-inline-label">残量として使う列:</span>
-        <select id="report-remaining-column"></select>
-        <span class="report-inline-label">トスアップ列:</span>
-        <select id="report-tossup-column"></select>
-        <span class="report-inline-label">アポ(獲得)列:</span>
-        <select id="report-appo-column"></select>
-        <details class="col-picker">
-          <summary>表示する列を選択 ▾</summary>
-          <div id="report-extra-columns" class="cat-options col-picker-panel"></div>
-        </details>
-      </div>
+      <details class="col-picker">
+        <summary>都道府県を選択 ▾</summary>
+        <div id="pref-filter" class="cat-options col-picker-panel"></div>
+      </details>
     </div>
   </section>
 
   <nav class="main-tabs">
-    <button class="main-tab-btn active" data-tab="summary">サマリー(エリアレポート)</button>
+    <button class="main-tab-btn active" data-tab="summary">集計</button>
     <button class="main-tab-btn" data-tab="detail">詳細データ</button>
   </nav>
 
   <main>
     <section id="tab-summary" class="main-tab-panel active">
+      <div class="tab-row">
+        <button id="agg-mode-list" class="tab-btn active" data-mode="list">リスト毎表示</button>
+        <button id="agg-mode-industry" class="tab-btn" data-mode="industry">業種毎表示</button>
+        <button id="report-expand-all" class="btn-link">すべて展開</button>
+        <button id="report-collapse-all" class="btn-link">すべて折りたたむ</button>
+      </div>
       <div id="summary-panel"></div>
     </section>
 

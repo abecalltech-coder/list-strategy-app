@@ -29,18 +29,22 @@ const state = {
   loaded: false,
   detailTableSize: { height: null }, // 詳細データ表の手動リサイズ後の高さ(null=既定)
   detailColumnWidths: {}, // title -> { [colIndex]: px } 詳細データ表の列幅(シートごとに記憶)
+  reportMode: "list", // "list" = リスト毎表示 / "industry" = 業種毎表示
   report: {
     area: null,
     expandedLists: new Set(), // 都道府県の内訳を開いているリスト名(ベースはALL行のみ表示)
-    remainingColumn: null, // 残量シートの中で「残量」として使う列名
+    remainingColumn: null, // 残量シートの中で「残量」として使う列名(自動判定)
     absentColumn: "不在", // リストデータシートの中で「不在」として使う列名
     notCalledColumn: "未コール", // リストデータシートの中で「未コール」として使う列名(値をそのまま使用)
-    tossupColumn: null, // トスアップ率の分子として使う列名
-    appoColumn: null, // アポ率の分子として使う列名
-    extraColumns: new Set(), // リストデータから追加表示する列名
+    tossupColumn: null, // トスアップ率の分子として使う列名(自動判定)
+    appoColumn: null, // アポ率の分子として使う列名(自動判定)
+    extraColumns: new Set(), // (現在は未使用。常に空)
     sort: { key: "remaining", dir: "desc" },
-    tableSize: { height: null }, // サマリー表の手動リサイズ後の高さ(null=既定)
+    tableSize: { height: null }, // リスト毎表示の表の手動リサイズ後の高さ(null=既定)
     columnWidths: {}, // key -> px 列ごとの幅(ドラッグで変更した分を記憶)
+    industrySort: { key: "remaining", dir: "desc" }, // 業種毎表示のソート
+    industryTableSize: { height: null }, // 業種毎表示の表の手動リサイズ後の高さ
+    industryColumnWidths: {}, // 業種毎表示の列幅
   },
 };
 
@@ -432,73 +436,23 @@ function pickDefaultColumn(options, exactCandidates, containsCandidates, exclude
   return null;
 }
 
-// 「(未選択)」を選べる任意項目用のセレックスを描画する。
-// currentValue: null=未初期化(自動推定する) / ""=ユーザーが明示的に未選択にした / 文字列=列名
-function populateOptionalColumnSelect(selectEl, options, currentValue, defaultValue) {
-  const opts = ['<option value="">(未選択)</option>'].concat(
-    options.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`)
-  );
-  selectEl.innerHTML = opts.join("");
-  let keep = currentValue;
-  if (keep && !options.includes(keep)) keep = null; // 選んでいた列が無くなった -> 再推定
-  if (keep === null) keep = defaultValue || "";
-  selectEl.value = keep;
-  return keep;
-}
-
+// 残量として使う列・トスアップ率/アポ率の分子として使う列を自動判定して state.report に反映する
+// (手動での列選択UIは廃止し、常に自動判定のみを行う)
 function refreshReportControls() {
   const area = state.report.area;
   const { listSheet, remainingSheet } = getAreaSheetPair(area);
 
-  // 残量として使う列
-  const remainingSelect = $("#report-remaining-column");
+  // 残量として使う列(「残量」という名前の列があればそれを、無ければ最初の数値列を使う)
   const remainingOptions = getOtherColumnNames(remainingSheet, { numericOnly: true });
-  if (remainingOptions.length === 0) {
-    remainingSelect.innerHTML = `<option value="">(数値列なし)</option>`;
-    remainingSelect.disabled = true;
-    state.report.remainingColumn = null;
-  } else {
-    remainingSelect.disabled = false;
-    remainingSelect.innerHTML = remainingOptions.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-    let keep = state.report.remainingColumn;
-    if (!remainingOptions.includes(keep)) {
-      keep = remainingOptions.includes("残量") ? "残量" : remainingOptions[0];
-    }
-    remainingSelect.value = keep;
-    state.report.remainingColumn = keep;
-  }
+  state.report.remainingColumn =
+    remainingOptions.length === 0 ? null : remainingOptions.includes("残量") ? "残量" : remainingOptions[0];
 
-  // トスアップ率の分子・アポ率の分子として使う列(リストデータ側)
+  // トスアップ率・アポ率の分子として使う列(リストデータ側、自動判定。見つからなければ「—」表示になる)
   const listNumericOptions = getOtherColumnNames(listSheet, { numericOnly: true });
-
-  const tossupDefault = pickDefaultColumn(listNumericOptions, ["トスアップ"], ["トスアップ"], []);
-  state.report.tossupColumn = populateOptionalColumnSelect(
-    $("#report-tossup-column"), listNumericOptions, state.report.tossupColumn, tossupDefault
-  );
-
-  const appoDefault = pickDefaultColumn(listNumericOptions, ["アポ", "アポイント", "アポ数", "獲得アポ"], ["アポ"], ["禁"]);
-  state.report.appoColumn = populateOptionalColumnSelect(
-    $("#report-appo-column"), listNumericOptions, state.report.appoColumn, appoDefault
-  );
-
-  // 表示する追加列(リストデータの列。「不在」は固定表示のため除外)
-  const extraContainer = $("#report-extra-columns");
-  const extraOptions = listNumericOptions.filter(
-    (n) => n !== state.report.absentColumn && n !== state.report.notCalledColumn
-  );
-  extraContainer.innerHTML = "";
-  extraOptions.forEach((name) => {
-    const label = document.createElement("label");
-    label.className = "cat-option";
-    const checked = state.report.extraColumns.has(name);
-    label.innerHTML = `<input type="checkbox" ${checked ? "checked" : ""}/> <span>${escapeHtml(name)}</span>`;
-    label.querySelector("input").addEventListener("change", (e) => {
-      if (e.target.checked) state.report.extraColumns.add(name);
-      else state.report.extraColumns.delete(name);
-      renderSummary();
-    });
-    extraContainer.appendChild(label);
-  });
+  state.report.tossupColumn = pickDefaultColumn(listNumericOptions, ["トスアップ"], ["トスアップ"], []) || "";
+  state.report.appoColumn =
+    pickDefaultColumn(listNumericOptions, ["アポ", "アポイント", "アポ数", "獲得アポ"], ["アポ"], ["禁"]) || "";
+  state.report.extraColumns = new Set();
 }
 
 $("#report-expand-all").addEventListener("click", () => {
@@ -512,18 +466,19 @@ $("#report-collapse-all").addEventListener("click", () => {
   state.report.expandedLists = new Set();
   renderSummary();
 });
-$("#report-remaining-column").addEventListener("change", (e) => {
-  state.report.remainingColumn = e.target.value;
+
+// 「リスト毎表示」「業種毎表示」の切り替え
+function setAggMode(mode) {
+  state.reportMode = mode;
+  $("#agg-mode-list").classList.toggle("active", mode === "list");
+  $("#agg-mode-industry").classList.toggle("active", mode === "industry");
+  const showListControls = mode === "list";
+  $("#report-expand-all").style.display = showListControls ? "" : "none";
+  $("#report-collapse-all").style.display = showListControls ? "" : "none";
   renderSummary();
-});
-$("#report-tossup-column").addEventListener("change", (e) => {
-  state.report.tossupColumn = e.target.value;
-  renderSummary();
-});
-$("#report-appo-column").addEventListener("change", (e) => {
-  state.report.appoColumn = e.target.value;
-  renderSummary();
-});
+}
+$("#agg-mode-list").addEventListener("click", () => setAggMode("list"));
+$("#agg-mode-industry").addEventListener("click", () => setAggMode("industry"));
 
 function renderGlobalPrefectureFilter() {
   const container = $("#pref-filter");
@@ -1017,10 +972,143 @@ function reportSortArrow(key) {
   return state.report.sort.dir === "asc" ? " ▲" : " ▼";
 }
 
+// ------------------------------------------------------------
+// 業種毎表示(残量シートのE列以降=業種ごとの残量内訳を集計)
+// ------------------------------------------------------------
+
+// 残量シートの中で「業種」として扱う列(E列(0始まりで4)〜最後から2番目の列。
+// 一番後ろの列は業種横断の合計値のため業種としては扱わない)
+function getIndustryColumnRange(headers) {
+  const start = 4;
+  const end = headers.length - 2;
+  return { start, end };
+}
+
+function computeIndustryReport() {
+  const area = state.report.area;
+  if (!area) return { error: "エリアがありません" };
+  const { remainingSheet } = getAreaSheetPair(area);
+  if (!remainingSheet || !state.sheets[remainingSheet]) {
+    return { error: `エリア「${area}」に「残量」という名前のシートが見つかりません` };
+  }
+  const { headers, rows } = state.sheets[remainingSheet];
+  const { start, end } = getIndustryColumnRange(headers);
+  if (end < start) {
+    return { error: `「${remainingSheet}」に業種ごとの内訳列(E列以降)が見つかりません` };
+  }
+
+  const industryNames = [];
+  for (let i = start; i <= end; i++) {
+    if (headers[i]) industryNames.push(headers[i]);
+  }
+  const totals = new Map(industryNames.map((n) => [n, 0]));
+
+  rows.forEach((cells) => {
+    const listName = String(cells[CONFIG.listNameColumnIndex] ?? "");
+    const pref = String(cells[CONFIG.prefectureColumnIndex] ?? "");
+    if (!listName || !pref) return;
+    for (let i = start; i <= end; i++) {
+      const name = headers[i];
+      if (!name) continue;
+      const v = parseFloat(cells[i]);
+      if (isNaN(v)) continue;
+      totals.set(name, (totals.get(name) || 0) + v);
+    }
+  });
+
+  const sortKey = state.report.industrySort.key;
+  const dirMul = state.report.industrySort.dir === "asc" ? 1 : -1;
+  const industryRows = industryNames.map((name) => ({ name, remaining: totals.get(name) || 0 }));
+  industryRows.sort((a, b) => {
+    if (sortKey === "name") return a.name.localeCompare(b.name, "ja") * dirMul;
+    return (a.remaining - b.remaining) * dirMul;
+  });
+
+  const grandTotal = industryRows.reduce((sum, r) => sum + r.remaining, 0);
+  return { area, remainingSheet, rows: industryRows, grandTotal };
+}
+
+function toggleIndustrySort(key) {
+  const s = state.report.industrySort;
+  if (s.key !== key) {
+    state.report.industrySort = { key, dir: "desc" };
+  } else {
+    state.report.industrySort = { key, dir: s.dir === "desc" ? "asc" : "desc" };
+  }
+  renderSummary();
+}
+
+function industrySortArrow(key) {
+  if (state.report.industrySort.key !== key) return "";
+  return state.report.industrySort.dir === "asc" ? " ▲" : " ▼";
+}
+
+function renderIndustryReport(panel) {
+  const report = computeIndustryReport();
+  if (report.error) {
+    panel.innerHTML = `<p class="muted">${escapeHtml(report.error)}</p>`;
+    return;
+  }
+  const { rows, grandTotal } = report;
+  if (rows.length === 0) {
+    panel.innerHTML = `<p class="muted">業種ごとの内訳データが見つかりませんでした(残量シートのE列以降を確認してください)</p>`;
+    return;
+  }
+
+  const grandBar = document.createElement("div");
+  grandBar.className = "grand-total-bar";
+  grandBar.innerHTML =
+    `<span class="grand-label">${escapeHtml(state.report.area)} 業種別 残量合計</span>` +
+    `<span>残量 <b>${grandTotal}</b></span>`;
+  panel.appendChild(grandBar);
+
+  const maxRemaining = Math.max(1, ...rows.map((r) => r.remaining));
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "table-scroll";
+  const table = document.createElement("table");
+  table.className = "pivot-table report-table";
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const columns = [
+    { key: "name", label: "業種" },
+    { key: "remaining", label: "残量" },
+  ];
+  columns.forEach((h) => {
+    const th = document.createElement("th");
+    th.textContent = h.label + industrySortArrow(h.key);
+    th.className = "sortable";
+    th.addEventListener("click", () => toggleIndustrySort(h.key));
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="pref-cell">${escapeHtml(r.name)}</td>` +
+      `<td class="count-cell" style="background:${heatColor(r.remaining, maxRemaining)}">${r.remaining}</td>`;
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+
+  setupResizableColumns(table, headRow, columns, state.report.industryColumnWidths);
+  panel.appendChild(wrapTableForResize(tableWrap, state.report.industryTableSize));
+}
+
 function renderSummary() {
   const panel = $("#summary-panel");
   panel.innerHTML = "";
   if (!state.loaded) return;
+
+  if (state.reportMode === "industry") {
+    renderIndustryReport(panel);
+    return;
+  }
 
   const report = computeAreaReport();
   if (report.error) {
@@ -1030,7 +1118,7 @@ function renderSummary() {
   const { listRows, grand, extraCols } = report;
 
   if (!state.report.remainingColumn) {
-    panel.innerHTML = `<p class="muted">上の「残量として使う列」を選択してください(残量シートに数値列が見つかりませんでした)</p>`;
+    panel.innerHTML = `<p class="muted">残量シートに数値列が見つかりませんでした</p>`;
     return;
   }
 
