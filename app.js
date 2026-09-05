@@ -124,6 +124,7 @@ async function loadAll() {
     }
     state.loaded = true;
     setStatus(`最終更新: ${new Date().toLocaleString("ja-JP")} (${titles.length}シート)`, false);
+    renderAreaSwitcher();
     renderSheetSelector();
     renderGlobalPrefectureFilter();
     refreshAggControls();
@@ -247,6 +248,28 @@ function sortRowObjs(title, rowObjs) {
 }
 
 // ------------------------------------------------------------
+// エリア(シート名の【】部分)ごとのグループ化
+// シート名が「【関東】リストデータ」のような形式であれば、
+// 【】内をエリア名として扱い、エリア単位での表示切替に使う。
+// 該当しないシート名は「その他」エリアとして扱う。
+// ------------------------------------------------------------
+
+function getSheetArea(title) {
+  const m = title.match(/^【([^】]+)】/);
+  return m ? m[1] : "その他";
+}
+
+function groupSheetsByArea() {
+  const map = new Map(); // area -> titles[]
+  state.sheetOrder.forEach((title) => {
+    const area = getSheetArea(title);
+    if (!map.has(area)) map.set(area, []);
+    map.get(area).push(title);
+  });
+  return map;
+}
+
+// ------------------------------------------------------------
 // 都道府県一覧(全シート横断)
 // ------------------------------------------------------------
 
@@ -264,21 +287,77 @@ function getAllPrefectures() {
 // 描画: グローバルコントロール
 // ------------------------------------------------------------
 
+function renderAreaSwitcher() {
+  const container = $("#area-switcher");
+  container.innerHTML = "";
+  const areaMap = groupSheetsByArea();
+
+  const allBtn = document.createElement("button");
+  allBtn.className = "area-btn";
+  allBtn.textContent = "すべて";
+  allBtn.addEventListener("click", () => {
+    state.includedSheets = new Set(state.sheetOrder);
+    afterIncludedSheetsChanged();
+  });
+  container.appendChild(allBtn);
+
+  areaMap.forEach((titles, area) => {
+    const btn = document.createElement("button");
+    btn.className = "area-btn";
+    btn.textContent = area;
+    btn.addEventListener("click", () => {
+      state.includedSheets = new Set(titles);
+      if (!titles.includes(state.activeDetailSheet)) {
+        state.activeDetailSheet = titles[0];
+      }
+      afterIncludedSheetsChanged();
+    });
+    container.appendChild(btn);
+  });
+}
+
+function afterIncludedSheetsChanged() {
+  renderSheetSelector();
+  refreshAggControls();
+  renderDetailSheetTabs();
+  renderDetailTable();
+  renderSummary();
+}
+
 function renderSheetSelector() {
   const container = $("#sheet-selector");
   container.innerHTML = "";
-  state.sheetOrder.forEach((title) => {
-    const id = `sheet-chk-${title}`;
-    const label = document.createElement("label");
-    label.className = "chip";
-    label.innerHTML = `<input type="checkbox" id="${id}" ${state.includedSheets.has(title) ? "checked" : ""}/> ${escapeHtml(title)}`;
-    label.querySelector("input").addEventListener("change", (e) => {
-      if (e.target.checked) state.includedSheets.add(title);
-      else state.includedSheets.delete(title);
-      refreshAggControls();
-      renderSummary();
+  const areaMap = groupSheetsByArea();
+
+  areaMap.forEach((titles, area) => {
+    const group = document.createElement("div");
+    group.className = "sheet-group";
+
+    const groupLabel = document.createElement("span");
+    groupLabel.className = "sheet-group-label";
+    groupLabel.textContent = area;
+    group.appendChild(groupLabel);
+
+    titles.forEach((title) => {
+      const id = `sheet-chk-${title}`;
+      const label = document.createElement("label");
+      label.className = "chip";
+      label.innerHTML = `<input type="checkbox" id="${id}" ${state.includedSheets.has(title) ? "checked" : ""}/> ${escapeHtml(title)}`;
+      label.querySelector("input").addEventListener("change", (e) => {
+        if (e.target.checked) state.includedSheets.add(title);
+        else state.includedSheets.delete(title);
+        if (!state.includedSheets.has(state.activeDetailSheet)) {
+          state.activeDetailSheet = state.sheetOrder.find((t) => state.includedSheets.has(t)) || state.activeDetailSheet;
+        }
+        refreshAggControls();
+        renderDetailSheetTabs();
+        renderDetailTable();
+        renderSummary();
+      });
+      group.appendChild(label);
     });
-    container.appendChild(label);
+
+    container.appendChild(group);
   });
 }
 
@@ -382,16 +461,29 @@ $("#pref-select-none").addEventListener("click", () => {
 function renderDetailSheetTabs() {
   const container = $("#detail-sheet-tabs");
   container.innerHTML = "";
-  state.sheetOrder.forEach((title) => {
-    const btn = document.createElement("button");
-    btn.className = "tab-btn" + (state.activeDetailSheet === title ? " active" : "");
-    btn.textContent = title;
-    btn.addEventListener("click", () => {
-      state.activeDetailSheet = title;
-      renderDetailSheetTabs();
-      renderDetailTable();
+  const areaMap = groupSheetsByArea();
+  const visibleTitles = state.sheetOrder.filter((t) => state.includedSheets.has(t));
+
+  areaMap.forEach((titles, area) => {
+    const shown = titles.filter((t) => visibleTitles.includes(t));
+    if (shown.length === 0) return;
+
+    const areaLabel = document.createElement("span");
+    areaLabel.className = "tab-area-label";
+    areaLabel.textContent = area;
+    container.appendChild(areaLabel);
+
+    shown.forEach((title) => {
+      const btn = document.createElement("button");
+      btn.className = "tab-btn" + (state.activeDetailSheet === title ? " active" : "");
+      btn.textContent = title.replace(/^【[^】]+】/, "");
+      btn.addEventListener("click", () => {
+        state.activeDetailSheet = title;
+        renderDetailSheetTabs();
+        renderDetailTable();
+      });
+      container.appendChild(btn);
     });
-    container.appendChild(btn);
   });
 }
 
