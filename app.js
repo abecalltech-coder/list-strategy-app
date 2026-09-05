@@ -748,6 +748,19 @@ function extraCellHtml(count, pct) {
   return `<td class="count-cell">${count || 0} <span class="muted-inline">(${formatPct(pct)})</span></td>`;
 }
 
+// 残量 ≠ 未コール+不在 の場合に表示する警告アイコン(カーソルを合わせると内訳が見られる)
+function mismatchFlagHtml(obj) {
+  if (!obj.remainingMismatch) return "";
+  const sum = obj.notCalled + obj.absent;
+  return ` <span class="mismatch-flag" title="残量(${obj.remaining})と「未コール+不在」(${obj.notCalled}+${obj.absent}=${sum})が一致していません">⚠</span>`;
+}
+
+// 残量セルのHTML(ALL行は残量に応じたヒートマップ背景付き、都道府県内訳行は背景なし)
+function remainingCellHtml(obj, maxRemaining) {
+  const bg = maxRemaining === undefined ? "" : ` style="background:${heatColor(obj.remaining, maxRemaining)}"`;
+  return `<td class="count-cell"${bg}>${obj.remaining}${mismatchFlagHtml(obj)}</td>`;
+}
+
 function heatColor(value, max) {
   if (!value) return "transparent";
   const ratio = Math.min(1, value / max);
@@ -808,7 +821,7 @@ function ratioOrNull(numerator, denominator) {
   return (numerator / denominator) * 100;
 }
 
-// remaining/absent/notCalled/total/tossup/appo/validCount/extra が入ったオブジェクトに
+// remaining/absent/notCalled/tossup/appo/validCount/extra が入ったオブジェクトに
 // 有効率・トスアップ率・アポ率・追加列の対有効%を計算して追加する。
 function computeDerived(obj, extraCols) {
   // 有効率 = 有効結果 ÷ (不在 + 有効結果)
@@ -819,6 +832,9 @@ function computeDerived(obj, extraCols) {
   extraCols.forEach((c) => {
     obj.extraPct[c] = ratioOrNull(obj.extra[c], obj.validCount);
   });
+  // 残量シートの「残量」と、リストデータの「未コール」+「不在」は本来一致するはずだが、
+  // 2つのシートは別々に集計されているためズレることがある。ズレを検知して警告表示する。
+  obj.remainingMismatch = obj.remaining !== obj.notCalled + obj.absent;
   return obj;
 }
 
@@ -915,7 +931,16 @@ function computeAreaReport() {
     return (av - bv) * dirMul;
   });
 
-  return { area, listSheet, remainingSheet, listRows, grand, extraCols };
+  // 残量 ≠ 未コール+不在 になっている行数(ALL行・都道府県内訳行の両方を数える)
+  let mismatchCount = 0;
+  listRows.forEach((lr) => {
+    if (lr.all.remainingMismatch) mismatchCount++;
+    lr.prefRows.forEach((pr) => {
+      if (pr.remainingMismatch) mismatchCount++;
+    });
+  });
+
+  return { area, listSheet, remainingSheet, listRows, grand, extraCols, mismatchCount };
 }
 
 function toggleReportSort(key) {
@@ -944,7 +969,7 @@ function renderSummary() {
     panel.innerHTML = `<p class="muted">${escapeHtml(report.error)}</p>`;
     return;
   }
-  const { listRows, grand, extraCols } = report;
+  const { listRows, grand, extraCols, mismatchCount } = report;
 
   if (!state.report.remainingColumn) {
     panel.innerHTML = `<p class="muted">上の「残量として使う列」を選択してください(残量シートに数値列が見つかりませんでした)</p>`;
@@ -956,7 +981,7 @@ function renderSummary() {
   grandBar.className = "grand-total-bar";
   grandBar.innerHTML =
     `<span class="grand-label">${escapeHtml(state.report.area)} ALL</span>` +
-    `<span>残量 <b>${grand.remaining}</b></span>` +
+    `<span>残量 <b>${grand.remaining}</b>${mismatchFlagHtml(grand)}</span>` +
     `<span>未コール <b>${grand.notCalled}</b></span>` +
     `<span>不在 <b>${grand.absent}</b></span>` +
     `<span>有効結果 <b>${grand.validCount}</b></span>` +
@@ -964,6 +989,15 @@ function renderSummary() {
     `<span>トスアップ率 <b>${formatPct(grand.tossupRate)}</b></span>` +
     `<span>アポ率 <b>${formatPct(grand.appoRate)}</b></span>`;
   panel.appendChild(grandBar);
+
+  if (mismatchCount > 0) {
+    const warn = document.createElement("div");
+    warn.className = "mismatch-banner";
+    warn.textContent =
+      `⚠ 残量と「未コール+不在」が一致しない行が ${mismatchCount} 件あります。` +
+      `該当行の⚠マークにカーソルを合わせると内訳が確認できます(元データ側の集計タイミング・表記ゆれなどをご確認ください)。`;
+    panel.appendChild(warn);
+  }
 
   if (listRows.length === 0) {
     panel.innerHTML += `<p class="muted">データがありません</p>`;
@@ -1008,11 +1042,11 @@ function renderSummary() {
   listRows.forEach((lr) => {
     const expanded = state.report.expandedLists.has(lr.listName);
     const tr = document.createElement("tr");
-    tr.className = "report-all-row";
+    tr.className = "report-all-row" + (lr.all.remainingMismatch ? " row-mismatch" : "");
     tr.innerHTML =
       `<td class="pref-cell"><span class="row-toggle">${expanded ? "▼" : "▶"}</span>${escapeHtml(lr.listName)}</td>` +
       `<td class="pref-cell">ALL</td>` +
-      `<td class="count-cell" style="background:${heatColor(lr.all.remaining, maxRemaining)}">${lr.all.remaining}</td>` +
+      remainingCellHtml(lr.all, maxRemaining) +
       `<td class="count-cell">${lr.all.notCalled}</td>` +
       `<td class="count-cell">${lr.all.absent}</td>` +
       `<td class="count-cell">${formatPct(lr.all.validRate)}</td>` +
@@ -1029,11 +1063,11 @@ function renderSummary() {
     if (expanded) {
       lr.prefRows.forEach((pr) => {
         const subTr = document.createElement("tr");
-        subTr.className = "report-pref-row";
+        subTr.className = "report-pref-row" + (pr.remainingMismatch ? " row-mismatch" : "");
         subTr.innerHTML =
           `<td class="pref-cell"></td>` +
           `<td class="pref-cell">${escapeHtml(pr.pref)}</td>` +
-          `<td class="count-cell">${pr.remaining}</td>` +
+          remainingCellHtml(pr) +
           `<td class="count-cell">${pr.notCalled}</td>` +
           `<td class="count-cell">${pr.absent}</td>` +
           `<td class="count-cell">${formatPct(pr.validRate)}</td>` +
@@ -1054,7 +1088,8 @@ function renderSummary() {
     "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。未コール = リストデータの「未コール」列の値。" +
     "有効結果 = リストデータのF列〜AC列(繋がった結果)の合計。有効率 = 有効結果 ÷ (不在 + 有効結果)。" +
     "トスアップ率・アポ率・追加列の(%)はすべて対有効(÷有効結果)。" +
-    "列見出しクリックで昇順・降順に並び替えできます(どの項目でも切替可能)。";
+    "列見出しクリックで昇順・降順に並び替えできます(どの項目でも切替可能)。" +
+    "残量と「未コール+不在」が一致しない行には⚠が表示されます(残量シートとリストデータシートは別集計のためズレることがあります)。";
   panel.appendChild(note);
 }
 
