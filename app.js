@@ -748,6 +748,54 @@ function extraCellHtml(count, pct) {
   return `<td class="count-cell">${count || 0} <span class="muted-inline">(${formatPct(pct)})</span></td>`;
 }
 
+// 評価の良し悪しに応じたグラデーション色(赤→オレンジ→黄緑→緑)を返す。
+// badMax以下=悪い、badMax〜goodMinの間=普通、goodMin以上=良い、の3段階を滑らかにつなぐ。
+// 値がnull/未計算の場合はnullを返す(色を付けない)。
+function gradeColor(value, badMax, goodMin) {
+  if (value === null || value === undefined || isNaN(value)) return null;
+  const v = Math.max(0, Math.min(100, value));
+  const anchors = [
+    { v: 0, h: 0 }, // 赤(最も悪い)
+    { v: badMax, h: 28 }, // オレンジ(悪いの上限)
+    { v: goodMin, h: 90 }, // 黄緑(良いの下限)
+    { v: 100, h: 140 }, // 緑(最も良い)
+  ];
+  let lo = anchors[0];
+  let hi = anchors[anchors.length - 1];
+  for (let i = 0; i < anchors.length - 1; i++) {
+    if (v >= anchors[i].v && v <= anchors[i + 1].v) {
+      lo = anchors[i];
+      hi = anchors[i + 1];
+      break;
+    }
+  }
+  const span = hi.v - lo.v;
+  const t = span === 0 ? 0 : (v - lo.v) / span;
+  const hue = lo.h + (hi.h - lo.h) * t;
+  return `hsl(${hue.toFixed(0)}, 72%, 38%)`;
+}
+
+// 有効率・トスアップ率など、評価基準(良い/普通/悪い)が決まっている割合セルのHTML。
+// 文字色を評価に応じたグラデーションで表示する(値がない場合は通常表示)。
+function gradedPctHtml(value, badMax, goodMin) {
+  const text = formatPct(value);
+  const color = gradeColor(value, badMax, goodMin);
+  if (!color) return `<td class="count-cell">${text}</td>`;
+  return `<td class="count-cell"><span style="color:${color}; font-weight:700;">${text}</span></td>`;
+}
+
+// 有効率の評価基準: 良い=50%以上, 普通=30%〜50%, 悪い=30%以下
+const VALID_RATE_THRESHOLDS = { badMax: 30, goodMin: 50 };
+// トスアップ率の評価基準: 良い=5%以上, 普通=4%〜5%, 悪い=4%以下
+const TOSSUP_RATE_THRESHOLDS = { badMax: 4, goodMin: 5 };
+
+// エリア全体ALLバー用(<b>タグに評価色を付ける)
+function gradedBoldHtml(value, badMax, goodMin) {
+  const text = formatPct(value);
+  const color = gradeColor(value, badMax, goodMin);
+  return color ? `<b style="color:${color};">${text}</b>` : `<b>${text}</b>`;
+}
+
 // 残量セルのHTML(ALL行は残量に応じたヒートマップ背景付き、都道府県内訳行は背景なし)
 function remainingCellHtml(obj, maxRemaining) {
   const bg = maxRemaining === undefined ? "" : ` style="background:${heatColor(obj.remaining, maxRemaining)}"`;
@@ -908,19 +956,33 @@ function computeAreaReport() {
   const sortKey = state.report.sort.key;
   const dirMul = state.report.sort.dir === "asc" ? 1 : -1;
   const simpleKeys = ["remaining", "notCalled", "absent", "absent2", "validRate", "tossupRate", "appoRate"];
+  // 残量が同数の場合の自動タイブレーク順(残量でソートしている時だけ適用)
+  const TIE_BREAK_KEYS = ["validRate", "tossupRate", "appoRate"];
+  const compareBy = (key, a, b) => {
+    let av, bv;
+    if (simpleKeys.includes(key)) {
+      av = a.all[key];
+      bv = b.all[key];
+    } else {
+      av = a.all.extra[key] || 0;
+      bv = b.all.extra[key] || 0;
+    }
+    av = av === null || av === undefined ? -Infinity : av;
+    bv = bv === null || bv === undefined ? -Infinity : bv;
+    return (av - bv) * dirMul;
+  };
   listRows.sort((a, b) => {
     if (sortKey === "listName") return a.listName.localeCompare(b.listName, "ja") * dirMul;
-    let av, bv;
-    if (simpleKeys.includes(sortKey)) {
-      av = a.all[sortKey];
-      bv = b.all[sortKey];
-      av = av === null || av === undefined ? -Infinity : av;
-      bv = bv === null || bv === undefined ? -Infinity : bv;
-    } else {
-      av = a.all.extra[sortKey] || 0;
-      bv = b.all.extra[sortKey] || 0;
+    let diff = compareBy(sortKey, a, b);
+    if (diff !== 0) return diff;
+    // 「残量」でソートしている場合、残量が同数の行は有効率→トスアップ率→アポ率の順で自動的に並び替える
+    if (sortKey === "remaining") {
+      for (const key of TIE_BREAK_KEYS) {
+        diff = compareBy(key, a, b);
+        if (diff !== 0) return diff;
+      }
     }
-    return (av - bv) * dirMul;
+    return 0;
   });
 
   return { area, listSheet, remainingSheet, listRows, grand, extraCols };
@@ -969,8 +1031,8 @@ function renderSummary() {
     `<span>不在 <b>${grand.absent}</b></span>` +
     `<span>不在2 <b>${grand.absent2}</b></span>` +
     `<span>有効結果 <b>${grand.validCount}</b></span>` +
-    `<span>有効率 <b>${formatPct(grand.validRate)}</b></span>` +
-    `<span>トスアップ率 <b>${formatPct(grand.tossupRate)}</b></span>` +
+    `<span>有効率 ${gradedBoldHtml(grand.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin)}</span>` +
+    `<span>トスアップ率 ${gradedBoldHtml(grand.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin)}</span>` +
     `<span>アポ率 <b>${formatPct(grand.appoRate)}</b></span>`;
   panel.appendChild(grandBar);
 
@@ -1026,8 +1088,8 @@ function renderSummary() {
       `<td class="count-cell">${lr.all.notCalled}</td>` +
       `<td class="count-cell">${lr.all.absent}</td>` +
       `<td class="count-cell">${lr.all.absent2}</td>` +
-      `<td class="count-cell">${formatPct(lr.all.validRate)}</td>` +
-      `<td class="count-cell">${formatPct(lr.all.tossupRate)}</td>` +
+      gradedPctHtml(lr.all.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin) +
+      gradedPctHtml(lr.all.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin) +
       `<td class="count-cell">${formatPct(lr.all.appoRate)}</td>` +
       extraCols.map((c) => extraCellHtml(lr.all.extra[c], lr.all.extraPct[c])).join("");
     tr.addEventListener("click", () => {
@@ -1048,8 +1110,8 @@ function renderSummary() {
           `<td class="count-cell">${pr.notCalled}</td>` +
           `<td class="count-cell">${pr.absent}</td>` +
           `<td class="count-cell">${pr.absent2}</td>` +
-          `<td class="count-cell">${formatPct(pr.validRate)}</td>` +
-          `<td class="count-cell">${formatPct(pr.tossupRate)}</td>` +
+          gradedPctHtml(pr.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin) +
+          gradedPctHtml(pr.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin) +
           `<td class="count-cell">${formatPct(pr.appoRate)}</td>` +
           extraCols.map((c) => extraCellHtml(pr.extra[c], pr.extraPct[c])).join("");
         tbody.appendChild(subTr);
@@ -1066,7 +1128,8 @@ function renderSummary() {
     "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。未コール = リストデータの「未コール」列の値。不在2 = 不在 − 残量。" +
     "有効結果 = リストデータのF列〜AC列(繋がった結果)の合計。有効率 = 有効結果 ÷ (不在 + 有効結果)。" +
     "トスアップ率・アポ率・追加列の(%)はすべて対有効(÷有効結果)。" +
-    "列見出しクリックで昇順・降順に並び替えできます(どの項目でも切替可能)。";
+    "列見出しクリックで昇順・降順に並び替えできます(どの項目でも切替可能)。既定(残量順)の並びでは、残量が同数の行を有効率→トスアップ率→アポ率の順で自動的に並び替えます。" +
+    "有効率(良い:50%以上/普通:30〜50%/悪い:30%以下)・トスアップ率(良い:5%以上/普通:4〜5%/悪い:4%以下)は評価に応じて文字色を赤〜緑のグラデーションで表示します。";
   panel.appendChild(note);
 }
 
