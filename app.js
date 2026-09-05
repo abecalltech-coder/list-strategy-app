@@ -27,7 +27,8 @@ const state = {
   activeDetailSheet: null,
   activeTab: "summary",
   loaded: false,
-  detailTableSize: { width: null, height: null }, // 詳細データ表の手動リサイズ後のサイズ(null=既定)
+  detailTableSize: { height: null }, // 詳細データ表の手動リサイズ後の高さ(null=既定)
+  detailColumnWidths: {}, // title -> { [colIndex]: px } 詳細データ表の列幅(シートごとに記憶)
   report: {
     area: null,
     expandedLists: new Set(), // 都道府県の内訳を開いているリスト名(ベースはALL行のみ表示)
@@ -38,7 +39,8 @@ const state = {
     appoColumn: null, // アポ率の分子として使う列名
     extraColumns: new Set(), // リストデータから追加表示する列名
     sort: { key: "remaining", dir: "desc" },
-    tableSize: { width: null, height: null }, // サマリー表の手動リサイズ後のサイズ(null=既定)
+    tableSize: { height: null }, // サマリー表の手動リサイズ後の高さ(null=既定)
+    columnWidths: {}, // key -> px 列ごとの幅(ドラッグで変更した分を記憶)
   },
 };
 
@@ -725,6 +727,15 @@ function renderDetailTable() {
   });
   table.appendChild(tbody);
   tableWrap.appendChild(table);
+
+  if (!state.detailColumnWidths[title]) state.detailColumnWidths[title] = {};
+  setupResizableColumns(
+    table,
+    headRow,
+    headers.map((headerName, colIndex) => ({ key: String(colIndex), label: headerName })),
+    state.detailColumnWidths[title]
+  );
+
   panel.appendChild(wrapTableForResize(tableWrap, state.detailTableSize));
 
   if (rowObjs.length > MAX_RENDER) {
@@ -1122,6 +1133,9 @@ function renderSummary() {
   });
   table.appendChild(tbody);
   tableWrap.appendChild(table);
+
+  setupResizableColumns(table, headRow, headers, state.report.columnWidths);
+
   panel.appendChild(wrapTableForResize(tableWrap, state.report.tableSize));
 
   const note = document.createElement("p");
@@ -1154,37 +1168,29 @@ function escapeHtml(str) {
 }
 
 // ------------------------------------------------------------
-// 表のリサイズ(高さ・幅をドラッグで変更。マウス/タッチ(携帯操作)両対応)
+// 表のリサイズ
+// 1) 表全体の「高さ」だけを下端のバーをドラッグして変更(マウス/タッチ両対応)
+// 2) 各列の「幅」を列見出しの右端をドラッグして個別に変更(マウス/タッチ両対応)
 // ------------------------------------------------------------
 
-// wrapEl: リサイズ用ハンドルを置く外側の要素(スクロールしない)
-// sizedEl: 実際にwidth/heightを変更する要素(.table-scroll。スクロール自体はこちらが担当)
-// sizeState: { width, height } を保持するオブジェクト(再描画をまたいでサイズを覚えておくため)
-function attachResizeHandle(wrapEl, sizedEl, sizeState) {
+// wrapEl: 高さリサイズ用のバーを置く外側の要素(スクロールしない)
+// sizedEl: 実際にheightを変更する要素(.table-scroll。スクロール自体はこちらが担当)
+// sizeState: { height } を保持するオブジェクト(再描画をまたいでサイズを覚えておくため)
+function attachHeightResizeHandle(wrapEl, sizedEl, sizeState) {
   const handle = document.createElement("div");
   handle.className = "table-resize-handle";
-  handle.title = "ドラッグして表のサイズを変更";
+  handle.title = "ドラッグして表の高さを変更";
   wrapEl.appendChild(handle);
 
-  let startX = 0;
   let startY = 0;
-  let startW = 0;
   let startH = 0;
 
   function onPointerMove(e) {
-    const dx = e.clientX - startX;
     const dy = e.clientY - startY;
-    const minW = 240;
     const minH = 160;
     const maxH = Math.round(window.innerHeight * 0.85);
-    const parentWidth = wrapEl.parentElement ? wrapEl.parentElement.getBoundingClientRect().width : startW + dx;
-    // ハンドル用の余白(wrapのpadding分)を差し引いて、はみ出さないようにする
-    const maxW = Math.round(parentWidth) - 16;
-    const newW = Math.max(minW, Math.min(maxW, Math.round(startW + dx)));
     const newH = Math.max(minH, Math.min(maxH, Math.round(startH + dy)));
-    sizeState.width = newW;
     sizeState.height = newH;
-    sizedEl.style.width = `${newW}px`;
     sizedEl.style.height = `${newH}px`;
     sizedEl.style.maxHeight = "none";
     if (e.cancelable) e.preventDefault();
@@ -1196,34 +1202,93 @@ function attachResizeHandle(wrapEl, sizedEl, sizeState) {
   }
   handle.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    startX = e.clientX;
     startY = e.clientY;
-    const rect = sizedEl.getBoundingClientRect();
-    startW = rect.width;
-    startH = rect.height;
+    startH = sizedEl.getBoundingClientRect().height;
     wrapEl.classList.add("resizing");
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
   });
 }
 
-// 保存済みのサイズ(sizeState)を要素に適用する(再描画のたびに呼び出して復元する)
-function applyStoredSize(sizedEl, sizeState) {
-  if (sizeState.width) sizedEl.style.width = `${sizeState.width}px`;
+// 保存済みの高さ(sizeState.height)を要素に適用する(再描画のたびに呼び出して復元する)
+function applyStoredHeight(sizedEl, sizeState) {
   if (sizeState.height) {
     sizedEl.style.height = `${sizeState.height}px`;
     sizedEl.style.maxHeight = "none";
   }
 }
 
-// table-scroll(スクロール領域)をリサイズ用の外枠で包み、ハンドルを取り付けて返す
+// table-scroll(スクロール領域)を、高さリサイズ用の外枠で包んで返す
 function wrapTableForResize(tableWrap, sizeState) {
-  applyStoredSize(tableWrap, sizeState);
+  applyStoredHeight(tableWrap, sizeState);
   const resizeWrap = document.createElement("div");
   resizeWrap.className = "table-resize-wrap";
   resizeWrap.appendChild(tableWrap);
-  attachResizeHandle(resizeWrap, tableWrap, sizeState);
+  attachHeightResizeHandle(resizeWrap, tableWrap, sizeState);
   return resizeWrap;
+}
+
+// 列名の文字数から初期の列幅(px)を概算する(あくまで初期値。ドラッグでいつでも調整可能)
+function defaultColWidth(label) {
+  const len = String(label).length;
+  return Math.max(70, Math.min(220, len * 9 + 40));
+}
+
+// 表をtable-layout:fixedにして、各列(<col>)に幅を設定し、列見出しの右端に
+// ドラッグ用ハンドルを取り付けて列幅を個別に変更できるようにする。
+// columns: [{ key, label }] の配列(表示順、theadの<th>の並びと対応させること)
+// widthsState: { [key]: px } 変更後の幅を保存しておくオブジェクト(再描画をまたいで記憶する)
+// theadRow: 見出し行の<tr>要素(子として<th>がcolumnsと同じ順番で並んでいること)
+function setupResizableColumns(table, theadRow, columns, widthsState) {
+  const colgroup = document.createElement("colgroup");
+  const colEls = columns.map((col) => {
+    const c = document.createElement("col");
+    const w = widthsState[col.key] || defaultColWidth(col.label);
+    widthsState[col.key] = w;
+    c.style.width = `${w}px`;
+    colgroup.appendChild(c);
+    return c;
+  });
+  table.insertBefore(colgroup, table.firstChild);
+
+  function updateTableWidth() {
+    const total = columns.reduce((sum, col) => sum + (widthsState[col.key] || 0), 0);
+    table.style.width = `${total}px`;
+  }
+  updateTableWidth();
+
+  const ths = Array.from(theadRow.children);
+  columns.forEach((col, i) => {
+    const th = ths[i];
+    if (!th) return;
+    const grip = document.createElement("span");
+    grip.className = "col-resize-handle";
+    grip.title = "ドラッグして列幅を変更";
+    grip.addEventListener("click", (e) => e.stopPropagation());
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = widthsState[col.key] || defaultColWidth(col.label);
+      grip.classList.add("resizing");
+
+      function onMove(ev) {
+        const dx = ev.clientX - startX;
+        const newW = Math.max(50, Math.round(startW + dx));
+        widthsState[col.key] = newW;
+        colEls[i].style.width = `${newW}px`;
+        updateTableWidth();
+      }
+      function onUp() {
+        grip.classList.remove("resizing");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      }
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
+    th.appendChild(grip);
+  });
 }
 
 $("#refresh-btn").addEventListener("click", loadAll);

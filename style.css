@@ -221,9 +221,9 @@ main { padding: 20px 24px 60px; }
 .table-resize-wrap {
   position: relative;
   margin-bottom: 8px;
-  /* 右下にリサイズハンドル用のスペースを確保する(表自体のスクロールバーと重ならないように、
-     ハンドルは table-scroll の外側のこの余白に置く) */
-  padding: 0 16px 16px 0;
+  /* 下部にリサイズバー用のスペースを確保する(表自体のスクロールバーと重ならないように、
+     バーは table-scroll の外側のこの余白に置く) */
+  padding-bottom: 10px;
 }
 
 .table-scroll {
@@ -255,27 +255,29 @@ main { padding: 20px 24px 60px; }
 
 .table-scroll tbody td:first-child { background: var(--card-bg); }
 
+/* 表全体の「高さ」を変更するバー(下端の横棒をドラッグ。マウス/タッチ両対応) */
 .table-resize-handle {
   position: absolute;
-  right: 0;
+  left: 0;
+  right: 16px; /* 縦スクロールバーの角と重ならないよう少し余白を空ける */
   bottom: 0;
-  width: 16px;
-  height: 16px;
-  cursor: nwse-resize;
+  height: 8px;
+  cursor: ns-resize;
   touch-action: none;
   z-index: 5;
   border-radius: 3px;
-  background-image: repeating-linear-gradient(135deg, var(--muted) 0, var(--muted) 1.5px, transparent 1.5px, transparent 4.5px);
-  opacity: 0.55;
+  background-image: repeating-linear-gradient(90deg, var(--muted) 0, var(--muted) 10px, transparent 10px, transparent 16px);
+  opacity: 0.35;
 }
 .table-resize-handle:hover,
 .table-resize-wrap.resizing .table-resize-handle {
-  opacity: 1;
+  opacity: 0.9;
   background-color: #eef0f4;
 }
 
 table {
   border-collapse: collapse;
+  table-layout: fixed;
   width: 100%;
   font-size: 12px;
   white-space: nowrap;
@@ -285,6 +287,27 @@ th, td {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 列幅を変更するハンドル(列見出しの右端の縦線をドラッグ。マウス/タッチ両対応) */
+th {
+  position: relative;
+}
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 4;
+}
+.col-resize-handle:hover,
+.col-resize-handle.resizing {
+  background: rgba(37, 99, 235, 0.3);
 }
 
 th.sortable {
