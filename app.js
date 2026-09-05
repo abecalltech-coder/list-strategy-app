@@ -27,6 +27,7 @@ const state = {
   activeDetailSheet: null,
   activeTab: "summary",
   loaded: false,
+  detailTableSize: { width: null, height: null }, // 詳細データ表の手動リサイズ後のサイズ(null=既定)
   report: {
     area: null,
     expandedLists: new Set(), // 都道府県の内訳を開いているリスト名(ベースはALL行のみ表示)
@@ -37,6 +38,7 @@ const state = {
     appoColumn: null, // アポ率の分子として使う列名
     extraColumns: new Set(), // リストデータから追加表示する列名
     sort: { key: "remaining", dir: "desc" },
+    tableSize: { width: null, height: null }, // サマリー表の手動リサイズ後のサイズ(null=既定)
   },
 };
 
@@ -723,7 +725,7 @@ function renderDetailTable() {
   });
   table.appendChild(tbody);
   tableWrap.appendChild(table);
-  panel.appendChild(tableWrap);
+  panel.appendChild(wrapTableForResize(tableWrap, state.detailTableSize));
 
   if (rowObjs.length > MAX_RENDER) {
     const note = document.createElement("p");
@@ -1120,7 +1122,7 @@ function renderSummary() {
   });
   table.appendChild(tbody);
   tableWrap.appendChild(table);
-  panel.appendChild(tableWrap);
+  panel.appendChild(wrapTableForResize(tableWrap, state.report.tableSize));
 
   const note = document.createElement("p");
   note.className = "muted";
@@ -1149,6 +1151,79 @@ function initTabs() {
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ------------------------------------------------------------
+// 表のリサイズ(高さ・幅をドラッグで変更。マウス/タッチ(携帯操作)両対応)
+// ------------------------------------------------------------
+
+// wrapEl: リサイズ用ハンドルを置く外側の要素(スクロールしない)
+// sizedEl: 実際にwidth/heightを変更する要素(.table-scroll。スクロール自体はこちらが担当)
+// sizeState: { width, height } を保持するオブジェクト(再描画をまたいでサイズを覚えておくため)
+function attachResizeHandle(wrapEl, sizedEl, sizeState) {
+  const handle = document.createElement("div");
+  handle.className = "table-resize-handle";
+  handle.title = "ドラッグして表のサイズを変更";
+  wrapEl.appendChild(handle);
+
+  let startX = 0;
+  let startY = 0;
+  let startW = 0;
+  let startH = 0;
+
+  function onPointerMove(e) {
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const minW = 240;
+    const minH = 160;
+    const maxH = Math.round(window.innerHeight * 0.85);
+    const parentWidth = wrapEl.parentElement ? wrapEl.parentElement.getBoundingClientRect().width : startW + dx;
+    // ハンドル用の余白(wrapのpadding分)を差し引いて、はみ出さないようにする
+    const maxW = Math.round(parentWidth) - 16;
+    const newW = Math.max(minW, Math.min(maxW, Math.round(startW + dx)));
+    const newH = Math.max(minH, Math.min(maxH, Math.round(startH + dy)));
+    sizeState.width = newW;
+    sizeState.height = newH;
+    sizedEl.style.width = `${newW}px`;
+    sizedEl.style.height = `${newH}px`;
+    sizedEl.style.maxHeight = "none";
+    if (e.cancelable) e.preventDefault();
+  }
+  function onPointerUp() {
+    wrapEl.classList.remove("resizing");
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+  }
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = sizedEl.getBoundingClientRect();
+    startW = rect.width;
+    startH = rect.height;
+    wrapEl.classList.add("resizing");
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  });
+}
+
+// 保存済みのサイズ(sizeState)を要素に適用する(再描画のたびに呼び出して復元する)
+function applyStoredSize(sizedEl, sizeState) {
+  if (sizeState.width) sizedEl.style.width = `${sizeState.width}px`;
+  if (sizeState.height) {
+    sizedEl.style.height = `${sizeState.height}px`;
+    sizedEl.style.maxHeight = "none";
+  }
+}
+
+// table-scroll(スクロール領域)をリサイズ用の外枠で包み、ハンドルを取り付けて返す
+function wrapTableForResize(tableWrap, sizeState) {
+  applyStoredSize(tableWrap, sizeState);
+  const resizeWrap = document.createElement("div");
+  resizeWrap.className = "table-resize-wrap";
+  resizeWrap.appendChild(tableWrap);
+  attachResizeHandle(resizeWrap, tableWrap, sizeState);
+  return resizeWrap;
 }
 
 $("#refresh-btn").addEventListener("click", loadAll);

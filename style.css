@@ -218,11 +218,60 @@ main { padding: 20px 24px 60px; }
   margin-bottom: 8px;
 }
 
+.table-resize-wrap {
+  position: relative;
+  margin-bottom: 8px;
+  /* 右下にリサイズハンドル用のスペースを確保する(表自体のスクロールバーと重ならないように、
+     ハンドルは table-scroll の外側のこの余白に置く) */
+  padding: 0 16px 16px 0;
+}
+
 .table-scroll {
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 420px;
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 1行目(見出し行)を固定表示 */
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fafafa;
+}
+
+/* 1列目を固定表示(横スクロールしても列見出し・行名は常に見える) */
+.table-scroll td:first-child,
+.table-scroll th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+/* 見出し行×1列目が交差する左上のセルは両方の固定より前面に */
+.table-scroll thead th:first-child { z-index: 3; }
+
+.table-scroll tbody td:first-child { background: var(--card-bg); }
+
+.table-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  z-index: 5;
+  border-radius: 3px;
+  background-image: repeating-linear-gradient(135deg, var(--muted) 0, var(--muted) 1.5px, transparent 1.5px, transparent 4.5px);
+  opacity: 0.55;
+}
+.table-resize-handle:hover,
+.table-resize-wrap.resizing .table-resize-handle {
+  opacity: 1;
+  background-color: #eef0f4;
 }
 
 table {
@@ -240,9 +289,6 @@ th, td {
 
 th.sortable {
   cursor: pointer;
-  background: #fafafa;
-  position: sticky;
-  top: 0;
   user-select: none;
 }
 th.sortable:hover { background: #f0f0f2; }
@@ -358,6 +404,8 @@ th.sortable:hover { background: #f0f0f2; }
 
 .report-table .report-all-row { font-weight: 600; background: #fafafa; cursor: pointer; }
 .report-table .report-all-row:hover { background: #f0f0f2; }
+.report-table .report-all-row td:first-child { background: #fafafa; }
+.report-table .report-all-row:hover td:first-child { background: #f0f0f2; }
 .row-toggle {
   display: inline-block;
   width: 14px;
@@ -370,3 +418,4 @@ th.sortable:hover { background: #f0f0f2; }
   font-weight: 400;
 }
 .report-table .report-pref-row { font-size: 12px; }
+.report-table .report-pref-row td:first-child { background: var(--card-bg); }
