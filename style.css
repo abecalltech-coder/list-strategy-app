@@ -254,13 +254,19 @@ th.sortable:hover { background: #f0f0f2; }
 
 .muted { color: var(--muted); font-size: 12px; }
 
-.agg-controls { display: flex; gap: 8px; }
+.agg-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 8px; }
 .agg-controls select {
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12px;
   background: #fff;
+}
+
+.muted-inline {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 2px;
 }
 
 .area-btn {
@@ -337,7 +343,8 @@ th.sortable:hover { background: #f0f0f2; }
 
 .grand-total-bar {
   display: flex;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 10px 20px;
   align-items: baseline;
   background: #fff7f5;
   border: 1px solid #f3d9d2;
