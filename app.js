@@ -7,15 +7,12 @@
 
 const CONFIG = window.APP_CONFIG;
 
-// 「有効」の定義: リストデータシートの中で、以下の項目名の合計数を「有効数」とする。
-// トスアップ率・アポ率・追加列の％はすべてこの「有効数」に対する割合(対有効)として計算する。
-const VALID_COLUMNS = [
-  "現アナ", "決裁者不在", "アプローチNG", "主旨NG", "クロージングNG", "電気NG", "SMSNG",
-  "見込みC", "見込みC(不在)", "見込みB", "見込みB(不在)", "見込みA", "見込みA(不在)",
-  "19時以降対応案件", "土日架電希望案件",
-  "対象外(既契約)", "対象外(建物管理)", "対象外(本社管理)", "対象外(オール電化・太陽光等)", "対象外(高圧)", "対象外(その他)",
-  "アポ禁",
-];
+// 「有効結果」の定義: リストデータシートのF列〜AC列(0始まりの列インデックスで5〜28)の
+// 合計値を「有効結果」とする(列名ではなく列の位置で判定)。
+// トスアップ率・アポ率・追加列の％はすべてこの「有効結果」に対する割合(対有効)として計算する。
+// 有効率 = 有効結果 ÷ (不在 + 有効結果)。
+const VALID_RESULT_COL_START = 5; // F列(0始まり: A=0, B=1, C=2, D=3, E=4, F=5)
+const VALID_RESULT_COL_END = 28; // AC列(0始まり: ... Z=25, AA=26, AB=27, AC=28)
 
 // リスト名+都道府県のキー結合に使う区切り文字(データ中に出現しない制御文字)
 const SEP = "\u0000";
@@ -35,7 +32,7 @@ const state = {
     expandedLists: new Set(), // 都道府県の内訳を開いているリスト名(ベースはALL行のみ表示)
     remainingColumn: null, // 残量シートの中で「残量」として使う列名
     absentColumn: "不在", // リストデータシートの中で「不在」として使う列名
-    totalColumn: null, // 有効率の分母(リスト累計数)として使う列名。null=未初期化, ""=未選択, 文字列=列名
+    notCalledColumn: "未コール", // リストデータシートの中で「未コール」として使う列名(値をそのまま使用)
     tossupColumn: null, // トスアップ率の分子として使う列名
     appoColumn: null, // アポ率の分子として使う列名
     extraColumns: new Set(), // リストデータから追加表示する列名
@@ -339,7 +336,6 @@ function renderAreaSwitcher() {
       }
       state.report.area = area;
       state.report.remainingColumn = null;
-      state.report.totalColumn = null;
       state.report.tossupColumn = null;
       state.report.appoColumn = null;
       state.report.extraColumns = new Set();
@@ -468,13 +464,8 @@ function refreshReportControls() {
     state.report.remainingColumn = keep;
   }
 
-  // 有効率の分母(リスト累計数)・トスアップ率の分子・アポ率の分子として使う列(リストデータ側)
+  // トスアップ率の分子・アポ率の分子として使う列(リストデータ側)
   const listNumericOptions = getOtherColumnNames(listSheet, { numericOnly: true });
-
-  const totalDefault = pickDefaultColumn(listNumericOptions, ["累計数", "累計", "合計"], ["累計", "合計"], []);
-  state.report.totalColumn = populateOptionalColumnSelect(
-    $("#report-total-column"), listNumericOptions, state.report.totalColumn, totalDefault
-  );
 
   const tossupDefault = pickDefaultColumn(listNumericOptions, ["トスアップ"], ["トスアップ"], []);
   state.report.tossupColumn = populateOptionalColumnSelect(
@@ -488,7 +479,9 @@ function refreshReportControls() {
 
   // 表示する追加列(リストデータの列。「不在」は固定表示のため除外)
   const extraContainer = $("#report-extra-columns");
-  const extraOptions = listNumericOptions.filter((n) => n !== state.report.absentColumn);
+  const extraOptions = listNumericOptions.filter(
+    (n) => n !== state.report.absentColumn && n !== state.report.notCalledColumn
+  );
   extraContainer.innerHTML = "";
   extraOptions.forEach((name) => {
     const label = document.createElement("label");
@@ -517,10 +510,6 @@ $("#report-collapse-all").addEventListener("click", () => {
 });
 $("#report-remaining-column").addEventListener("change", (e) => {
   state.report.remainingColumn = e.target.value;
-  renderSummary();
-});
-$("#report-total-column").addEventListener("change", (e) => {
-  state.report.totalColumn = e.target.value;
   renderSummary();
 });
 $("#report-tossup-column").addEventListener("change", (e) => {
@@ -793,6 +782,26 @@ function buildValueMap(title, columnNames) {
   return map;
 }
 
+// listSheetのF列〜AC列(有効結果の対象範囲)の値を、(リスト名, 都道府県)キーで合算したMapを作る
+function buildValidResultMap(title, startIdx, endIdx) {
+  const map = new Map();
+  if (!title || !state.sheets[title]) return map;
+  const { rows } = state.sheets[title];
+  rows.forEach((cells) => {
+    const listName = String(cells[CONFIG.listNameColumnIndex] ?? "");
+    const pref = String(cells[CONFIG.prefectureColumnIndex] ?? "");
+    if (!listName || !pref) return;
+    const key = listName + SEP + pref;
+    let sum = 0;
+    for (let idx = startIdx; idx <= endIdx && idx < cells.length; idx++) {
+      const v = parseFloat(cells[idx]);
+      sum += isNaN(v) ? 0 : v;
+    }
+    map.set(key, (map.get(key) || 0) + sum);
+  });
+  return map;
+}
+
 // 分母が0(または無効)なら null を返す(%表示は「—」にする)
 function ratioOrNull(numerator, denominator) {
   if (!denominator) return null;
@@ -802,7 +811,8 @@ function ratioOrNull(numerator, denominator) {
 // remaining/absent/notCalled/total/tossup/appo/validCount/extra が入ったオブジェクトに
 // 有効率・トスアップ率・アポ率・追加列の対有効%を計算して追加する。
 function computeDerived(obj, extraCols) {
-  obj.validRate = ratioOrNull(obj.remaining, obj.total);
+  // 有効率 = 有効結果 ÷ (不在 + 有効結果)
+  obj.validRate = ratioOrNull(obj.validCount, obj.absent + obj.validCount);
   obj.tossupRate = ratioOrNull(obj.tossup, obj.validCount);
   obj.appoRate = ratioOrNull(obj.appo, obj.validCount);
   obj.extraPct = {};
@@ -823,53 +833,45 @@ function computeAreaReport() {
 
   const remainingCol = state.report.remainingColumn;
   const absentCol = state.report.absentColumn;
-  const totalCol = state.report.totalColumn || null;
+  const notCalledCol = state.report.notCalledColumn;
   const tossupCol = state.report.tossupColumn || null;
   const appoCol = state.report.appoColumn || null;
   const extraCols = Array.from(state.report.extraColumns);
 
-  const listHeaders = listSheet && state.sheets[listSheet] ? state.sheets[listSheet].headers : [];
-  const validColsPresent = VALID_COLUMNS.filter((name) => listHeaders.includes(name));
-
-  const listColumnsNeeded = new Set([absentCol, ...validColsPresent, ...extraCols]);
-  if (totalCol) listColumnsNeeded.add(totalCol);
+  const listColumnsNeeded = new Set([absentCol, notCalledCol, ...extraCols]);
   if (tossupCol) listColumnsNeeded.add(tossupCol);
   if (appoCol) listColumnsNeeded.add(appoCol);
 
   const remainingMap = remainingCol ? buildValueMap(remainingSheet, [remainingCol]) : new Map();
   const listMap = buildValueMap(listSheet, Array.from(listColumnsNeeded));
+  const validResultMap = buildValidResultMap(listSheet, VALID_RESULT_COL_START, VALID_RESULT_COL_END);
 
-  const allKeys = new Set([...remainingMap.keys(), ...listMap.keys()]);
-  const byList = new Map(); // listName -> Map(pref -> {remaining, absent, notCalled, total, tossup, appo, validCount, extra})
+  const allKeys = new Set([...remainingMap.keys(), ...listMap.keys(), ...validResultMap.keys()]);
+  const byList = new Map(); // listName -> Map(pref -> {remaining, absent, notCalled, tossup, appo, validCount, extra})
 
   allKeys.forEach((key) => {
     const [listName, pref] = key.split(SEP);
     if (!byList.has(listName)) byList.set(listName, new Map());
     const remaining = remainingMap.get(key)?.[remainingCol] || 0;
     const absent = listMap.get(key)?.[absentCol] || 0;
-    const notCalled = remaining - absent;
-    const total = totalCol ? listMap.get(key)?.[totalCol] || 0 : 0;
+    const notCalled = listMap.get(key)?.[notCalledCol] || 0;
     const tossup = tossupCol ? listMap.get(key)?.[tossupCol] || 0 : 0;
     const appo = appoCol ? listMap.get(key)?.[appoCol] || 0 : 0;
-    let validCount = 0;
-    validColsPresent.forEach((c) => {
-      validCount += listMap.get(key)?.[c] || 0;
-    });
+    const validCount = validResultMap.get(key) || 0;
     const extra = {};
     extraCols.forEach((c) => (extra[c] = listMap.get(key)?.[c] || 0));
-    byList.get(listName).set(pref, { remaining, absent, notCalled, total, tossup, appo, validCount, extra });
+    byList.get(listName).set(pref, { remaining, absent, notCalled, tossup, appo, validCount, extra });
   });
 
   const listRows = [];
   byList.forEach((prefMap, listName) => {
-    const all = { remaining: 0, absent: 0, notCalled: 0, total: 0, tossup: 0, appo: 0, validCount: 0, extra: {} };
+    const all = { remaining: 0, absent: 0, notCalled: 0, tossup: 0, appo: 0, validCount: 0, extra: {} };
     extraCols.forEach((c) => (all.extra[c] = 0));
     prefMap.forEach((v) => {
       computeDerived(v, extraCols);
       all.remaining += v.remaining;
       all.absent += v.absent;
       all.notCalled += v.notCalled;
-      all.total += v.total;
       all.tossup += v.tossup;
       all.appo += v.appo;
       all.validCount += v.validCount;
@@ -882,13 +884,12 @@ function computeAreaReport() {
     listRows.push({ listName, all, prefRows });
   });
 
-  const grand = { remaining: 0, absent: 0, notCalled: 0, total: 0, tossup: 0, appo: 0, validCount: 0, extra: {} };
+  const grand = { remaining: 0, absent: 0, notCalled: 0, tossup: 0, appo: 0, validCount: 0, extra: {} };
   extraCols.forEach((c) => (grand.extra[c] = 0));
   listRows.forEach((lr) => {
     grand.remaining += lr.all.remaining;
     grand.absent += lr.all.absent;
     grand.notCalled += lr.all.notCalled;
-    grand.total += lr.all.total;
     grand.tossup += lr.all.tossup;
     grand.appo += lr.all.appo;
     grand.validCount += lr.all.validCount;
@@ -958,7 +959,7 @@ function renderSummary() {
     `<span>残量 <b>${grand.remaining}</b></span>` +
     `<span>未コール <b>${grand.notCalled}</b></span>` +
     `<span>不在 <b>${grand.absent}</b></span>` +
-    `<span>有効数 <b>${grand.validCount}</b></span>` +
+    `<span>有効結果 <b>${grand.validCount}</b></span>` +
     `<span>有効率 <b>${formatPct(grand.validRate)}</b></span>` +
     `<span>トスアップ率 <b>${formatPct(grand.tossupRate)}</b></span>` +
     `<span>アポ率 <b>${formatPct(grand.appoRate)}</b></span>`;
@@ -1050,9 +1051,9 @@ function renderSummary() {
   const note = document.createElement("p");
   note.className = "muted";
   note.textContent =
-    "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。未コール = 残量 − 不在。" +
-    "有効率 = 残量 ÷ リスト累計数(上の「リスト累計数として使う列」)。" +
-    "有効数 = 現アナ・決裁者不在・各種NG・見込みA/B/C・対象外各種・アポ禁など21項目の合計。トスアップ率・アポ率・追加列の(%)はすべて対有効(÷有効数)。" +
+    "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。未コール = リストデータの「未コール」列の値。" +
+    "有効結果 = リストデータのF列〜AC列(繋がった結果)の合計。有効率 = 有効結果 ÷ (不在 + 有効結果)。" +
+    "トスアップ率・アポ率・追加列の(%)はすべて対有効(÷有効結果)。" +
     "列見出しクリックで昇順・降順に並び替えできます(どの項目でも切替可能)。";
   panel.appendChild(note);
 }
