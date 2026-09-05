@@ -42,6 +42,13 @@ const state = {
     tableSize: { height: null }, // リスト毎表示の表の手動リサイズ後の高さ(null=既定)
     columnWidths: {}, // key -> px 列ごとの幅(ドラッグで変更した分を記憶)
   },
+  analysis: {
+    mode: "week", // "week"(週次) | "weekday"(曜日別)
+    expandedLists: new Set(), // 都道府県の内訳を開いているリスト名
+    sort: { key: null, dir: "desc" }, // null=既定(現在の累計が多い順)
+    tableSize: { height: null },
+    columnWidths: {},
+  },
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -158,6 +165,7 @@ async function loadAll() {
     renderDetailSheetTabs();
     renderDetailTable();
     renderSummary();
+    renderAnalysis();
   } catch (err) {
     console.error(err);
     setStatus(`エラー: ${err.message}`, true);
@@ -344,6 +352,7 @@ function renderAreaSwitcher() {
       state.report.appoColumn = null;
       state.report.extraColumns = new Set();
       state.report.expandedLists = new Set();
+      state.analysis.expandedLists = new Set();
       afterIncludedSheetsChanged();
     });
     container.appendChild(btn);
@@ -357,6 +366,7 @@ function afterIncludedSheetsChanged() {
   renderDetailSheetTabs();
   renderDetailTable();
   renderSummary();
+  renderAnalysis();
 }
 
 function renderSheetSelector() {
@@ -463,6 +473,30 @@ $("#report-collapse-all").addEventListener("click", () => {
   renderSummary();
 });
 
+$("#analysis-mode-week").addEventListener("click", () => {
+  state.analysis.mode = "week";
+  $("#analysis-mode-week").classList.add("active");
+  $("#analysis-mode-weekday").classList.remove("active");
+  renderAnalysis();
+});
+$("#analysis-mode-weekday").addEventListener("click", () => {
+  state.analysis.mode = "weekday";
+  $("#analysis-mode-weekday").classList.add("active");
+  $("#analysis-mode-week").classList.remove("active");
+  renderAnalysis();
+});
+$("#analysis-expand-all").addEventListener("click", () => {
+  const report = computeAnalysisReport();
+  if (!report.error) {
+    state.analysis.expandedLists = new Set(report.listRows.map((lr) => lr.listName));
+  }
+  renderAnalysis();
+});
+$("#analysis-collapse-all").addEventListener("click", () => {
+  state.analysis.expandedLists = new Set();
+  renderAnalysis();
+});
+
 function renderGlobalPrefectureFilter() {
   const container = $("#pref-filter");
   container.innerHTML = "";
@@ -487,6 +521,7 @@ function updateGlobalPrefectureSelection() {
   }
   renderDetailTable();
   renderSummary();
+  renderAnalysis();
 }
 
 $("#pref-select-all").addEventListener("click", () => {
@@ -1133,6 +1168,279 @@ function renderSummary() {
     "右側の業種別の列(飲食・和食など)は、残量シートのE列以降の値をそのリスト(行をクリックすると都道府県ごと)に集計した残量の内訳です。列内での多い/少ないに応じて背景色が変化します。" +
     "列見出しクリックで昇順・降順に並び替えできます(業種列も含め、どの項目でも切替可能)。既定(残量順)の並びでは、残量が同数の行を有効率→トスアップ率→アポ率の順で自動的に並び替えます。" +
     "有効率(良い:50%以上/普通:30〜50%/悪い:30%以下)・トスアップ率(良い:5%以上/普通:4〜5%/悪い:4%以下)は評価に応じて文字色を赤〜緑のグラデーションで表示します。";
+  panel.appendChild(note);
+}
+
+// ------------------------------------------------------------
+// 描画: 分析タブ(日次スナップショットの週次/曜日別集計)
+//
+// スプレッドシート側でGoogle Apps Script(お渡ししたスクリプト)を設定すると、
+// 毎日自動的に config.js の logSheetName で指定したシート(既定「トスアップログ」)へ
+// リスト名・都道府県・エリア・日付・トスアップ累計・増加分 が1行ずつ記録されます。
+// このアプリはそのシートを他のシートと同じ「読み込み専用」の方法で読み込んで
+// 集計するだけで、書き込みは一切行いません。
+// ------------------------------------------------------------
+
+function getLogSheetName() {
+  return (CONFIG && CONFIG.logSheetName) || "トスアップログ";
+}
+
+// ログシートの「日付」列の値をJSのDateに変換する。
+// Apps Script側が文字列("2026-09-05"等)で書き込むことを想定しているが、
+// スプレッドシート側で日付として自動認識され、UNFORMATTED_VALUEでシリアル値
+// (1899-12-30起点の日数)として返ってくる場合にも対応する。解釈できなければnull。
+function parseLogDate(raw) {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw === "number" && isFinite(raw)) {
+    const base = Date.UTC(1899, 11, 30);
+    return new Date(base + raw * 86400000);
+  }
+  const s = String(raw).trim();
+  const m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (m) {
+    return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// 月曜始まりの週のラベル(例: "9/1週")。同じ週なら常に同じラベルになるよう、
+// その週の月曜日の日付を基準にする。
+function getWeekMonday(date) {
+  const day = date.getUTCDay(); // 0=日, 1=月, ... 6=土
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(date.getTime());
+  monday.setUTCDate(monday.getUTCDate() + diffToMonday);
+  return monday;
+}
+function getWeekLabel(date) {
+  const monday = getWeekMonday(date);
+  return `${monday.getUTCMonth() + 1}/${monday.getUTCDate()}週`;
+}
+
+const WEEKDAY_LABELS_BY_JS_DAY = ["日", "月", "火", "水", "木", "金", "土"];
+const WEEKDAY_ORDER = ["月", "火", "水", "木", "金", "土", "日"];
+function getWeekdayLabel(date) {
+  return WEEKDAY_LABELS_BY_JS_DAY[date.getUTCDay()];
+}
+
+function analysisSortArrow(key) {
+  const curKey = state.analysis.sort.key || "cumulative";
+  if (curKey !== key) return "";
+  return state.analysis.sort.dir === "asc" ? " ▲" : " ▼";
+}
+
+function toggleAnalysisSort(key) {
+  const s = state.analysis.sort;
+  const curKey = s.key || "cumulative";
+  if (curKey !== key) {
+    state.analysis.sort = { key, dir: "desc" };
+  } else {
+    state.analysis.sort = { key, dir: s.dir === "desc" ? "asc" : "desc" };
+  }
+  renderAnalysis();
+}
+
+// ログシートを集計し、選択中エリア・都道府県フィルタに絞った上で、
+// リスト名(ALLは都道府県合計)ごとに「現在の累計」と、週次/曜日別の「増加分」の合計を返す。
+function computeAnalysisReport() {
+  const area = state.report.area;
+  if (!area) return { error: "エリアがありません" };
+
+  const logSheetName = getLogSheetName();
+  const logSheet = state.sheets[logSheetName];
+  if (!logSheet) {
+    return { error: "missing-log-sheet", logSheetName };
+  }
+
+  const { headers, rows } = logSheet;
+  const idx = {
+    listName: headers.indexOf("リスト名"),
+    pref: headers.indexOf("都道府県"),
+    area: headers.indexOf("エリア"),
+    date: headers.indexOf("日付"),
+    cumulative: headers.indexOf("トスアップ累計"),
+    delta: headers.indexOf("増加分"),
+  };
+  if (idx.listName === -1 || idx.pref === -1 || idx.date === -1) {
+    return {
+      error: `「${logSheetName}」シートの列構成が想定と異なります(リスト名・都道府県・日付の列が必要です)`,
+    };
+  }
+
+  const mode = state.analysis.mode;
+  const byList = new Map(); // listName -> Map(pref -> { cols: {label->合計}, latestCumulative, latestDate })
+  const columnKeys = new Set();
+  const weekSortKey = new Map(); // 週ラベル -> ソート用タイムスタンプ
+
+  rows.forEach((cells) => {
+    if (idx.area !== -1) {
+      const rowArea = String(cells[idx.area] ?? "");
+      if (rowArea && rowArea !== area) return;
+    }
+    const listName = String(cells[idx.listName] ?? "");
+    const pref = String(cells[idx.pref] ?? "");
+    if (!listName || !pref) return;
+    if (state.globalPrefectures.size > 0 && !state.globalPrefectures.has(pref)) return;
+
+    const date = parseLogDate(cells[idx.date]);
+    if (!date) return;
+
+    const deltaRaw = idx.delta !== -1 ? parseFloat(cells[idx.delta]) : NaN;
+    const delta = isNaN(deltaRaw) ? 0 : deltaRaw;
+    const cumulativeRaw = idx.cumulative !== -1 ? parseFloat(cells[idx.cumulative]) : NaN;
+
+    const colKey = mode === "week" ? getWeekLabel(date) : getWeekdayLabel(date);
+    columnKeys.add(colKey);
+    if (mode === "week") weekSortKey.set(colKey, getWeekMonday(date).getTime());
+
+    if (!byList.has(listName)) byList.set(listName, new Map());
+    const prefMap = byList.get(listName);
+    if (!prefMap.has(pref)) prefMap.set(pref, { cols: {}, latestCumulative: 0, latestDate: null });
+    const entry = prefMap.get(pref);
+    entry.cols[colKey] = (entry.cols[colKey] || 0) + delta;
+    if (!isNaN(cumulativeRaw) && (!entry.latestDate || date > entry.latestDate)) {
+      entry.latestCumulative = cumulativeRaw;
+      entry.latestDate = date;
+    }
+  });
+
+  const columns =
+    mode === "week"
+      ? Array.from(columnKeys).sort((a, b) => weekSortKey.get(a) - weekSortKey.get(b))
+      : WEEKDAY_ORDER.filter((w) => columnKeys.has(w));
+
+  const listRows = [];
+  byList.forEach((prefMap, listName) => {
+    const all = { cols: {}, latestCumulative: 0, latestDate: null };
+    columns.forEach((c) => (all.cols[c] = 0));
+    const prefRows = [];
+    prefMap.forEach((entry, pref) => {
+      columns.forEach((c) => (all.cols[c] += entry.cols[c] || 0));
+      all.latestCumulative += entry.latestCumulative || 0;
+      if (!all.latestDate || (entry.latestDate && entry.latestDate > all.latestDate)) {
+        all.latestDate = entry.latestDate;
+      }
+      prefRows.push({ pref, cols: entry.cols, latestCumulative: entry.latestCumulative });
+    });
+    prefRows.sort((a, b) => a.pref.localeCompare(b.pref, "ja"));
+    listRows.push({ listName, all, prefRows });
+  });
+
+  const sortKey = state.analysis.sort.key || "cumulative";
+  const dirMul = state.analysis.sort.dir === "asc" ? 1 : -1;
+  listRows.sort((a, b) => {
+    if (sortKey === "listName") return a.listName.localeCompare(b.listName, "ja") * dirMul;
+    const av = sortKey === "cumulative" ? a.all.latestCumulative : a.all.cols[sortKey] || 0;
+    const bv = sortKey === "cumulative" ? b.all.latestCumulative : b.all.cols[sortKey] || 0;
+    return (av - bv) * dirMul;
+  });
+
+  return { area, logSheetName, columns, listRows, mode };
+}
+
+function renderAnalysis() {
+  const panel = $("#analysis-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  if (!state.loaded) return;
+
+  const report = computeAnalysisReport();
+  if (report.error === "missing-log-sheet") {
+    panel.innerHTML =
+      `<p class="muted">「${escapeHtml(report.logSheetName)}」シートがまだ見つかりません。` +
+      `スプレッドシート側で日次の自動記録(Google Apps Script)を設定すると、このタブにデータが表示されるようになります。` +
+      `設定方法はREADME、またはお渡ししたセットアップ手順をご覧ください。設定後は、翌日以降の記録からこのタブに反映されます。</p>`;
+    return;
+  }
+  if (report.error) {
+    panel.innerHTML = `<p class="muted">${escapeHtml(report.error)}</p>`;
+    return;
+  }
+
+  const { columns, listRows } = report;
+
+  if (columns.length === 0 || listRows.length === 0) {
+    panel.innerHTML = `<p class="muted">「${escapeHtml(report.logSheetName)}」にまだデータがありません(スプレッドシート側の日次記録が始まるとここに表示されます)</p>`;
+    return;
+  }
+
+  const maxCumulative = Math.max(1, ...listRows.map((r) => r.all.latestCumulative));
+  const maxCol = {};
+  columns.forEach((c) => {
+    maxCol[c] = Math.max(1, ...listRows.map((r) => r.all.cols[c] || 0));
+  });
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "table-scroll";
+  const table = document.createElement("table");
+  table.className = "pivot-table report-table";
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const headers = [
+    { key: "listName", label: "リスト名" },
+    { key: "pref", label: "都道府県" },
+    { key: "cumulative", label: "現在の累計" },
+    ...columns.map((c) => ({ key: c, label: c })),
+  ];
+  headers.forEach((h) => {
+    const th = document.createElement("th");
+    if (h.key === "pref") {
+      th.textContent = h.label;
+    } else {
+      th.textContent = h.label + analysisSortArrow(h.key);
+      th.className = "sortable";
+      th.addEventListener("click", () => toggleAnalysisSort(h.key));
+    }
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  listRows.forEach((lr) => {
+    const expanded = state.analysis.expandedLists.has(lr.listName);
+    const tr = document.createElement("tr");
+    tr.className = "report-all-row";
+    tr.innerHTML =
+      `<td class="pref-cell"><span class="row-toggle">${expanded ? "▼" : "▶"}</span>${escapeHtml(lr.listName)}</td>` +
+      `<td class="pref-cell">ALL</td>` +
+      `<td class="count-cell" style="background:${heatColor(lr.all.latestCumulative, maxCumulative)}">${lr.all.latestCumulative}</td>` +
+      columns.map((c) => industryCellHtml(lr.all.cols[c], maxCol[c])).join("");
+    tr.addEventListener("click", () => {
+      if (expanded) state.analysis.expandedLists.delete(lr.listName);
+      else state.analysis.expandedLists.add(lr.listName);
+      renderAnalysis();
+    });
+    tbody.appendChild(tr);
+
+    if (expanded) {
+      lr.prefRows.forEach((pr) => {
+        const subTr = document.createElement("tr");
+        subTr.className = "report-pref-row";
+        subTr.innerHTML =
+          `<td class="pref-cell"></td>` +
+          `<td class="pref-cell">${escapeHtml(pr.pref)}</td>` +
+          `<td class="count-cell">${pr.latestCumulative}</td>` +
+          columns.map((c) => industryCellHtml(pr.cols[c], maxCol[c])).join("");
+        tbody.appendChild(subTr);
+      });
+    }
+  });
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+
+  setupResizableColumns(table, headRow, headers, state.analysis.columnWidths);
+  panel.appendChild(wrapTableForResize(tableWrap, state.analysis.tableSize));
+
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent =
+    "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。" +
+    "「現在の累計」はトスアップの最新の累計値です。それ以外の列(週次表示なら「9/1週」のような週単位、曜日別表示なら「月」〜「日」)は、" +
+    "その期間に新たに増えたトスアップの合計(増加分)です。上部の「週次」「曜日別」ボタンで表示単位を切り替えられます。" +
+    "列見出しクリックでその項目を基準に並び替えできます。";
   panel.appendChild(note);
 }
 

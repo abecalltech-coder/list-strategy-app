@@ -3,12 +3,16 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>リスト戦略システム</title>
+<title>Listgram</title>
+<meta name="application-name" content="Listgram" />
+<meta name="apple-mobile-web-app-title" content="Listgram" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<link rel="manifest" href="manifest.json" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="app-header">
-    <h1>リスト戦略システム</h1>
+    <h1>Listgram</h1>
     <div class="header-right">
       <span id="status" class="status">読み込み中...</span>
       <button id="refresh-btn" class="btn-primary">🔄 再読み込み</button>
@@ -41,11 +45,22 @@
   </section>
 
   <nav class="main-tabs">
+    <button class="main-tab-btn" data-tab="analysis">分析</button>
     <button class="main-tab-btn active" data-tab="summary">集計</button>
     <button class="main-tab-btn" data-tab="detail">詳細データ</button>
   </nav>
 
   <main>
+    <section id="tab-analysis" class="main-tab-panel">
+      <div class="tab-row">
+        <button id="analysis-mode-week" class="tab-btn active">週次</button>
+        <button id="analysis-mode-weekday" class="tab-btn">曜日別</button>
+        <button id="analysis-expand-all" class="btn-link">すべて展開</button>
+        <button id="analysis-collapse-all" class="btn-link">すべて折りたたむ</button>
+      </div>
+      <div id="analysis-panel"></div>
+    </section>
+
     <section id="tab-summary" class="main-tab-panel active">
       <div class="tab-row">
         <button id="report-expand-all" class="btn-link">すべて展開</button>
