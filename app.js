@@ -7,9 +7,10 @@
 
 const CONFIG = window.APP_CONFIG;
 
-// 「有効結果」の定義: リストデータシートのF列〜AC列(0始まりの列インデックスで5〜28)の
-// 合計値を「有効結果」とする(列名ではなく列の位置で判定)。
-// トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率・追加列の％は
+// 「有効結果」は現在、項目の定義設定(列名ベース、ユーザーが変更可能)で計算される。
+// 以下の2つは、初回起動時にまだ設定が無い場合だけ使う初期値の目安(リストデータシートの
+// F列〜AC列、0始まりの列インデックスで5〜28)。一度でも設定を保存すると使われなくなる。
+// トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率は
 // すべてこの「有効結果」に対する割合(対有効)として計算する。
 // 有効率 = 有効結果 ÷ (不在 + 有効結果)。
 const VALID_RESULT_COL_START = 5; // F列(0始まり: A=0, B=1, C=2, D=3, E=4, F=5)
@@ -33,15 +34,7 @@ const state = {
   report: {
     area: null,
     expandedLists: new Set(), // 都道府県の内訳を開いているリスト名(ベースはALL行のみ表示)
-    remainingColumn: null, // 残量シートの中で「残量」として使う列名(自動判定)
-    absentColumn: "不在", // リストデータシートの中で「不在」として使う列名
-    notCalledColumn: "未コール", // リストデータシートの中で「未コール」として使う列名(値をそのまま使用)
-    tossupColumn: null, // トスアップ率の分子として使う列名(自動判定)
-    appoColumn: null, // アポ率の分子として使う列名(自動判定)
-    approachNgColumn: null, // アプローチNG率の分子として使う列名(自動判定)
-    honshiNgColumn: null, // 主旨NG率の分子として使う列名(自動判定)
-    closingNgColumn: null, // クロージングNG率の分子として使う列名(自動判定)
-    extraColumns: new Set(), // (現在は未使用。常に空)
+    visibleColumns: null, // 集計タブに表示する項目のキー一覧(Set)。読み込み時にlocalStorageから復元/初期化する
     sort: { key: "remaining", dir: "desc" },
     tableSize: { height: null }, // リスト毎表示の表の手動リサイズ後の高さ(null=既定)
     columnWidths: {}, // key -> px 列ごとの幅(ドラッグで変更した分を記憶)
@@ -66,6 +59,191 @@ const state = {
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+// ------------------------------------------------------------
+// 項目の数値定義(どのシートのどの列から数値を拾うか)
+// ここで設定した内容は、この端末のブラウザ(localStorage)にのみ保存され、
+// 他の人や他の端末とは共有されません(画面ごとに個別に設定・運用する想定)。
+// ------------------------------------------------------------
+
+const COLUMN_DEFS_STORAGE_KEY = "listgram.columnDefs.v1";
+const CUSTOM_METRICS_STORAGE_KEY = "listgram.customMetrics.v1";
+const VISIBLE_COLUMNS_STORAGE_KEY = "listgram.visibleColumns.v1";
+
+// システム組み込みの基本項目一覧。source: "list"(リストデータシート) | "remaining"(残量シート)
+const BASE_METRIC_KEYS = [
+  { key: "remaining", label: "残量", source: "remaining" },
+  { key: "notCalled", label: "未コール", source: "list" },
+  { key: "absent", label: "不在", source: "list" },
+  { key: "validCount", label: "有効結果", source: "list" },
+  { key: "tossup", label: "トスアップ", source: "list" },
+  { key: "appo", label: "アポ", source: "list" },
+  { key: "approachNg", label: "アプローチNG", source: "list" },
+  { key: "honshiNg", label: "主旨NG", source: "list" },
+  { key: "closingNg", label: "クロージングNG", source: "list" },
+];
+
+// 集計タブの表に表示できる項目(表示/非表示を選べる項目)の一覧。既定でONの項目。
+const DEFAULT_VISIBLE_COLUMNS = [
+  "remaining",
+  "notCalled",
+  "absent",
+  "absent2",
+  "validRate",
+  "tossupRate",
+  "appoRate",
+  "approachNgRate",
+  "honshiNgRate",
+  "closingNgRate",
+];
+
+function loadFromStorage(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch (e) {
+    return fallback;
+  }
+}
+function saveToStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    // 保存できなくても致命的ではないため無視する(プライベートブラウジング等でlocalStorageが使えない場合)
+  }
+}
+
+let _columnDefsCache = null;
+function getColumnDefs() {
+  if (!_columnDefsCache) {
+    _columnDefsCache = loadFromStorage(COLUMN_DEFS_STORAGE_KEY, null) || {};
+  }
+  return _columnDefsCache;
+}
+function saveColumnDefs(defs) {
+  _columnDefsCache = defs;
+  saveToStorage(COLUMN_DEFS_STORAGE_KEY, defs);
+}
+
+let _customMetricsCache = null;
+function getCustomMetricDefs() {
+  if (!_customMetricsCache) {
+    _customMetricsCache = loadFromStorage(CUSTOM_METRICS_STORAGE_KEY, null) || [];
+  }
+  return _customMetricsCache;
+}
+function saveCustomMetricDefs(list) {
+  _customMetricsCache = list;
+  saveToStorage(CUSTOM_METRICS_STORAGE_KEY, list);
+}
+
+// 初回のみ、旧来の自動判定と同じロジックで初期値を作り、以降はユーザーの設定を尊重する
+function ensureColumnDefsSeeded() {
+  const existing = loadFromStorage(COLUMN_DEFS_STORAGE_KEY, null);
+  if (existing) {
+    _columnDefsCache = existing;
+    return;
+  }
+  const listTitles = getAllSheetTitlesByType("list");
+  const remainingTitles = getAllSheetTitlesByType("remaining");
+  const listSheet = listTitles[0] || null;
+  const remainingSheet = remainingTitles[0] || null;
+  const remainingOptions = getOtherColumnNames(remainingSheet, { numericOnly: true });
+  const listNumericOptions = getOtherColumnNames(listSheet, { numericOnly: true });
+
+  const remainingDefault = remainingOptions.includes("残量") ? "残量" : remainingOptions[0];
+  const tossupDefault = pickDefaultColumn(listNumericOptions, ["トスアップ"], ["トスアップ"], []);
+  const appoDefault = pickDefaultColumn(listNumericOptions, ["アポ", "アポイント", "アポ数", "獲得アポ"], ["アポ"], ["禁"]);
+  const approachNgDefault = pickDefaultColumn(listNumericOptions, ["アプローチNG"], ["アプローチNG", "アプローチ"], []);
+  const honshiNgDefault = pickDefaultColumn(listNumericOptions, ["主旨NG"], ["主旨NG", "主旨"], []);
+  const closingNgDefault = pickDefaultColumn(listNumericOptions, ["クロージングNG"], ["クロージングNG", "クロージング"], []);
+
+  // 有効結果: 従来の「リストデータのF列〜AC列を機械的に合計」という定義を、
+  // 今読み込まれている列名に変換して初期値とする(以降は列名ベースの設定として編集可能)
+  let validCountColumns = [];
+  if (listSheet && state.sheets[listSheet]) {
+    const headers = state.sheets[listSheet].headers;
+    for (let idx = VALID_RESULT_COL_START; idx <= VALID_RESULT_COL_END && idx < headers.length; idx++) {
+      validCountColumns.push(headers[idx]);
+    }
+  }
+
+  const defs = {
+    remaining: { source: "remaining", op: "sum", columns: remainingDefault ? [remainingDefault] : [] },
+    notCalled: { source: "list", op: "sum", columns: ["未コール"] },
+    absent: { source: "list", op: "sum", columns: ["不在"] },
+    validCount: { source: "list", op: "sum", columns: validCountColumns },
+    tossup: { source: "list", op: "sum", columns: tossupDefault ? [tossupDefault] : [] },
+    appo: { source: "list", op: "sum", columns: appoDefault ? [appoDefault] : [] },
+    approachNg: { source: "list", op: "sum", columns: approachNgDefault ? [approachNgDefault] : [] },
+    honshiNg: { source: "list", op: "sum", columns: honshiNgDefault ? [honshiNgDefault] : [] },
+    closingNg: { source: "list", op: "sum", columns: closingNgDefault ? [closingNgDefault] : [] },
+  };
+  saveColumnDefs(defs);
+}
+
+function ensureVisibleColumnsSeeded() {
+  const saved = loadFromStorage(VISIBLE_COLUMNS_STORAGE_KEY, null);
+  if (saved) {
+    state.report.visibleColumns = new Set(saved);
+  } else {
+    state.report.visibleColumns = new Set(DEFAULT_VISIBLE_COLUMNS);
+    saveToStorage(VISIBLE_COLUMNS_STORAGE_KEY, Array.from(state.report.visibleColumns));
+  }
+}
+function saveVisibleColumns() {
+  saveToStorage(VISIBLE_COLUMNS_STORAGE_KEY, Array.from(state.report.visibleColumns));
+}
+
+// 演算(合計/差/割合)を適用する。values は columns の並び順に対応する数値の配列。
+// 「差」「割合」はチェックした先頭2つ(1列目→2列目)を使う。
+function applyMetricOp(op, values) {
+  if (op === "diff") {
+    return (values[0] || 0) - (values[1] || 0);
+  }
+  if (op === "ratio") {
+    const denom = values[1] || 0;
+    if (!denom) return 0;
+    return (values[0] / denom) * 100;
+  }
+  return values.reduce((sum, v) => sum + (v || 0), 0);
+}
+
+// 指定の定義(source/op/columns)を、集計済みの列値オブジェクト(listRowVals/remainingRowVals)から計算する
+function computeDefValue(def, listRowVals, remainingRowVals) {
+  if (!def || !def.columns || def.columns.length === 0) return 0;
+  const src = def.source === "remaining" ? remainingRowVals : listRowVals;
+  const values = def.columns.map((c) => (src && src[c]) || 0);
+  return applyMetricOp(def.op, values);
+}
+
+// エリアをまたいで、「リストデータ」「残量」それぞれに該当する全シート名を返す
+// (項目の定義設定画面で、選択できる列名の一覧を作るために使う。エリアが増えても自動的に対象になる)
+function getAllSheetTitlesByType(type) {
+  const areaMap = groupSheetsByArea();
+  const set = new Set();
+  areaMap.forEach((titles) => {
+    const remainingSheet = titles.find((t) => t.includes("残量")) || null;
+    if (type === "remaining") {
+      if (remainingSheet) set.add(remainingSheet);
+    } else {
+      const listSheet = titles.find((t) => t !== remainingSheet && t.includes("リスト")) || null;
+      if (listSheet) set.add(listSheet);
+    }
+  });
+  return Array.from(set);
+}
+
+// 指定のシート種別("list"|"remaining")で選択可能な列名一覧(全エリア横断・重複除去)を返す
+function getAvailableColumnsForSource(source) {
+  const titles = getAllSheetTitlesByType(source);
+  const set = new Set();
+  titles.forEach((t) => {
+    getOtherColumnNames(t, { numericOnly: true }).forEach((n) => set.add(n));
+  });
+  return Array.from(set);
+}
 
 // ------------------------------------------------------------
 // データ取得
@@ -171,10 +349,14 @@ async function loadAll() {
       const firstArea = Array.from(groupSheetsByArea().keys())[0] || null;
       state.report.area = firstArea;
     }
+    ensureColumnDefsSeeded();
+    if (!state.report.visibleColumns) ensureVisibleColumnsSeeded();
     renderAreaSwitcher();
     renderSheetSelector();
     renderGlobalPrefectureFilter();
-    refreshReportControls();
+    renderColumnDefsPanel();
+    renderVisibleColumnsPanel();
+    renderReportRangeFilters();
     renderDetailSheetTabs();
     renderDetailTable();
     renderSummary();
@@ -374,10 +556,6 @@ function renderAreaSwitcher() {
         state.activeDetailSheet = titles[0];
       }
       state.report.area = area;
-      state.report.remainingColumn = null;
-      state.report.tossupColumn = null;
-      state.report.appoColumn = null;
-      state.report.extraColumns = new Set();
       state.report.expandedLists = new Set();
       state.report.rangeFilters = {};
       state.analysis.expandedLists = new Set();
@@ -391,7 +569,7 @@ function renderAreaSwitcher() {
 function afterIncludedSheetsChanged() {
   renderAreaSwitcher();
   renderSheetSelector();
-  refreshReportControls();
+  renderReportRangeFilters();
   renderDetailSheetTabs();
   renderDetailTable();
   renderSummary();
@@ -471,30 +649,6 @@ function pickDefaultColumn(options, exactCandidates, containsCandidates, exclude
     if (containsCandidates.some((c) => opt.includes(c))) return opt;
   }
   return null;
-}
-
-// 残量として使う列・トスアップ率/アポ率の分子として使う列を自動判定して state.report に反映する
-// (手動での列選択UIは廃止し、常に自動判定のみを行う)
-function refreshReportControls() {
-  const area = state.report.area;
-  const { listSheet, remainingSheet } = getAreaSheetPair(area);
-
-  // 残量として使う列(「残量」という名前の列があればそれを、無ければ最初の数値列を使う)
-  const remainingOptions = getOtherColumnNames(remainingSheet, { numericOnly: true });
-  state.report.remainingColumn =
-    remainingOptions.length === 0 ? null : remainingOptions.includes("残量") ? "残量" : remainingOptions[0];
-
-  // トスアップ率・アポ率・各種NG率の分子として使う列(リストデータ側、自動判定。見つからなければ「—」表示になる)
-  const listNumericOptions = getOtherColumnNames(listSheet, { numericOnly: true });
-  state.report.tossupColumn = pickDefaultColumn(listNumericOptions, ["トスアップ"], ["トスアップ"], []) || "";
-  state.report.appoColumn =
-    pickDefaultColumn(listNumericOptions, ["アポ", "アポイント", "アポ数", "獲得アポ"], ["アポ"], ["禁"]) || "";
-  state.report.approachNgColumn = pickDefaultColumn(listNumericOptions, ["アプローチNG"], ["アプローチNG", "アプローチ"], []) || "";
-  state.report.honshiNgColumn = pickDefaultColumn(listNumericOptions, ["主旨NG"], ["主旨NG", "主旨"], []) || "";
-  state.report.closingNgColumn =
-    pickDefaultColumn(listNumericOptions, ["クロージングNG"], ["クロージングNG", "クロージング"], []) || "";
-  state.report.extraColumns = new Set();
-  renderReportRangeFilters();
 }
 
 $("#report-expand-all").addEventListener("click", () => {
@@ -784,11 +938,6 @@ function formatPct(value) {
   return `${value.toFixed(1)}%`;
 }
 
-// 追加列セルのHTML(件数の下に対有効%を小さく添える)
-function extraCellHtml(count, pct) {
-  return `<td class="count-cell">${count || 0} <span class="muted-inline">(${formatPct(pct)})</span></td>`;
-}
-
 // 評価の良し悪しに応じたグラデーション色(赤→オレンジ→黄緑→緑)を返す。
 // badMax以下=悪い、badMax〜goodMinの間=普通、goodMin以上=良い、の3段階を滑らかにつなぐ。
 // 値がnull/未計算の場合はnullを返す(色を付けない)。
@@ -875,9 +1024,63 @@ function heatCellHtml(value, max) {
     : `<td class="count-cell">${v}</td>`;
 }
 
-// 残量セルのHTML(ALL行は列内での相対的な高さに応じた文字色付き、都道府県内訳行は通常表示)
-function remainingCellHtml(obj, maxRemaining) {
-  return heatCellHtml(obj.remaining, maxRemaining);
+// 集計タブに表示できる組み込み項目の一覧(表示順)。カスタム項目はこの後ろに追加される。
+const BUILTIN_DISPLAY_COLUMNS = [
+  { key: "remaining", label: "残量" },
+  { key: "notCalled", label: "未コール" },
+  { key: "absent", label: "不在" },
+  { key: "absent2", label: "不在2" },
+  { key: "validCount", label: "有効結果" },
+  { key: "validRate", label: "有効率" },
+  { key: "tossupRate", label: "トスアップ率" },
+  { key: "appoRate", label: "アポ率" },
+  { key: "approachNgRate", label: "アプローチNG率" },
+  { key: "honshiNgRate", label: "主旨NG率" },
+  { key: "closingNgRate", label: "クロージングNG率" },
+];
+
+// 集計タブで表示/非表示を選べる項目の一覧(組み込み項目 + カスタム項目)を返す
+function getDisplayableColumnList(customDefs) {
+  return [...BUILTIN_DISPLAY_COLUMNS, ...(customDefs || []).map((c) => ({ key: c.key, label: c.label }))];
+}
+
+// 集計タブの表の1セル分のHTMLを、項目キーに応じて生成する
+function renderReportCell(key, obj, ctx) {
+  switch (key) {
+    case "remaining":
+      return heatCellHtml(obj.remaining, ctx.maxRemaining);
+    case "notCalled":
+      return `<td class="count-cell">${obj.notCalled}</td>`;
+    case "absent":
+      return `<td class="count-cell">${obj.absent}</td>`;
+    case "absent2":
+      return `<td class="count-cell">${obj.absent2}</td>`;
+    case "validCount":
+      return `<td class="count-cell">${obj.validCount || 0}</td>`;
+    case "validRate":
+      return gradedPctHtml(obj.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin);
+    case "tossupRate":
+      return gradedPctHtml(obj.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin);
+    case "appoRate":
+      return `<td class="count-cell">${formatPct(obj.appoRate)}</td>`;
+    case "approachNgRate":
+      return `<td class="count-cell">${formatPct(obj.approachNgRate)}</td>`;
+    case "honshiNgRate":
+      return `<td class="count-cell">${formatPct(obj.honshiNgRate)}</td>`;
+    case "closingNgRate":
+      return `<td class="count-cell">${formatPct(obj.closingNgRate)}</td>`;
+    default: {
+      if (ctx.industryNames && ctx.industryNames.includes(key)) {
+        return heatCellHtml(obj.industry ? obj.industry[key] : 0, ctx.maxIndustry ? ctx.maxIndustry[key] : undefined);
+      }
+      const def = ctx.customDefMap && ctx.customDefMap[key];
+      const val = obj.extra ? obj.extra[key] : undefined;
+      if (def && def.op === "ratio") {
+        return `<td class="count-cell">${formatPct(val)}</td>`;
+      }
+      return `<td class="count-cell">${val || 0}</td>`;
+    }
+  }
 }
 
 // 指定シートの中から、(リスト名, 都道府県)をキーに指定列の値を合算したMapを作る
@@ -903,26 +1106,6 @@ function buildValueMap(title, columnNames) {
       const v = parseFloat(cells[idx]);
       obj[name] += isNaN(v) ? 0 : v;
     });
-  });
-  return map;
-}
-
-// listSheetのF列〜AC列(有効結果の対象範囲)の値を、(リスト名, 都道府県)キーで合算したMapを作る
-function buildValidResultMap(title, startIdx, endIdx) {
-  const map = new Map();
-  if (!title || !state.sheets[title]) return map;
-  const { rows } = state.sheets[title];
-  rows.forEach((cells) => {
-    const listName = String(cells[CONFIG.listNameColumnIndex] ?? "");
-    const pref = String(cells[CONFIG.prefectureColumnIndex] ?? "");
-    if (!listName || !pref) return;
-    const key = listName + SEP + pref;
-    let sum = 0;
-    for (let idx = startIdx; idx <= endIdx && idx < cells.length; idx++) {
-      const v = parseFloat(cells[idx]);
-      sum += isNaN(v) ? 0 : v;
-    }
-    map.set(key, (map.get(key) || 0) + sum);
   });
   return map;
 }
@@ -974,12 +1157,13 @@ function getIndustryNames(title) {
   return names;
 }
 
-// 集計タブの「表示条件」で絞り込み可能な項目の一覧(業種列は呼び出し側でindustryNamesを追加する)
+// 集計タブの「表示条件」で絞り込み可能な項目の一覧(業種列・カスタム項目は呼び出し側で追加する)
 const REPORT_RANGE_FILTER_BASE_COLUMNS = [
   { key: "remaining", label: "残量" },
   { key: "notCalled", label: "未コール" },
   { key: "absent", label: "不在" },
   { key: "absent2", label: "不在2" },
+  { key: "validCount", label: "有効結果" },
   { key: "validRate", label: "有効率" },
   { key: "tossupRate", label: "トスアップ率" },
   { key: "appoRate", label: "アポ率" },
@@ -997,17 +1181,21 @@ const REPORT_RANGE_FILTER_PERCENT_KEYS = new Set([
   "closingNgRate",
 ]);
 
-// 現在のエリアで表示条件の対象になる項目一覧(基本項目 + 業種列)を返す
-function getReportRangeFilterColumns(industryNames) {
-  return [...REPORT_RANGE_FILTER_BASE_COLUMNS, ...industryNames.map((n) => ({ key: n, label: n }))];
+// 現在のエリアで表示条件の対象になる項目一覧(基本項目 + カスタム項目 + 業種列)を返す
+function getReportRangeFilterColumns(industryNames, customDefs) {
+  const customCols = (customDefs || []).map((c) => ({ key: c.key, label: c.label }));
+  return [...REPORT_RANGE_FILTER_BASE_COLUMNS, ...customCols, ...industryNames.map((n) => ({ key: n, label: n }))];
 }
 
 // リストのALL行(全都道府県合計)の値が、state.report.rangeFiltersで指定した
 // すべての上限/下限条件を満たしているかどうかを判定する(上限・下限はどちらか片方だけでもよい)。
-function rowPassesRangeFilters(lr, industryNames) {
+function rowPassesRangeFilters(lr, industryNames, customKeys) {
   for (const [key, f] of Object.entries(state.report.rangeFilters)) {
     if (!f || (f.min === null && f.max === null)) continue;
-    const value = industryNames.includes(key) ? lr.all.industry[key] : lr.all[key];
+    let value;
+    if (industryNames.includes(key)) value = lr.all.industry[key];
+    else if (customKeys && customKeys.includes(key)) value = lr.all.extra[key];
+    else value = lr.all[key];
     if (value === null || value === undefined || isNaN(value)) return false;
     if (f.min !== null && value < f.min) return false;
     if (f.max !== null && value > f.max) return false;
@@ -1023,14 +1211,17 @@ function renderReportRangeFilters() {
   container.innerHTML = "";
   const { remainingSheet } = getAreaSheetPair(state.report.area);
   const industryNames = getIndustryNames(remainingSheet);
-  const columns = getReportRangeFilterColumns(industryNames);
+  const customDefs = getCustomMetricDefs();
+  const columns = getReportRangeFilterColumns(industryNames, customDefs);
+  const customDefMap = Object.fromEntries(customDefs.map((c) => [c.key, c]));
 
   columns.forEach((col) => {
     if (!state.report.rangeFilters[col.key]) {
       state.report.rangeFilters[col.key] = { min: null, max: null };
     }
     const f = state.report.rangeFilters[col.key];
-    const label = REPORT_RANGE_FILTER_PERCENT_KEYS.has(col.key) ? `${col.label}(%)` : col.label;
+    const isPercent = REPORT_RANGE_FILTER_PERCENT_KEYS.has(col.key) || (customDefMap[col.key] && customDefMap[col.key].op === "ratio");
+    const label = isPercent ? `${col.label}(%)` : col.label;
 
     const row = document.createElement("div");
     row.className = "range-filter-row";
@@ -1062,6 +1253,274 @@ $("#report-range-reset").addEventListener("click", () => {
   renderSummary();
 });
 
+// ------------------------------------------------------------
+// 描画: 項目の定義・表示する項目を設定するパネル(集計タブ)
+// ------------------------------------------------------------
+
+// 列の定義変更・表示項目変更のたびに、関係する画面をまとめて再描画する
+function afterColumnDefsChanged() {
+  renderReportRangeFilters();
+  renderVisibleColumnsPanel();
+  renderSummary();
+  renderStrategy(); // 残量・有効率などはクール戦略タブでも同じ定義を使っているため
+}
+
+// 1項目分の「対象シート・計算方法・使う列」を設定する行を作る
+// opts.editableLabel: 項目名を編集できるか(カスタム項目のみtrue)
+// opts.editableSource: 対象シート(リストデータ/残量)を変更できるか(カスタム項目のみtrue)
+// opts.removable: 削除ボタンを出すか(カスタム項目のみtrue)
+function buildMetricDefRow(key, label, fixedSource, def, onChange, opts = {}) {
+  const wrap = document.createElement("div");
+  wrap.className = "metric-def-row";
+
+  const title = document.createElement("div");
+  title.className = "metric-def-title";
+  if (opts.editableLabel) {
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = label;
+    nameInput.className = "metric-def-name-input";
+    nameInput.addEventListener("change", (e) => {
+      def.label = e.target.value.trim() || label;
+      onChange(def, { rerender: false });
+    });
+    title.appendChild(nameInput);
+  } else {
+    const span = document.createElement("span");
+    span.textContent = label;
+    title.appendChild(span);
+  }
+  if (opts.removable) {
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn-link";
+    removeBtn.textContent = "削除";
+    removeBtn.addEventListener("click", opts.onRemove);
+    title.appendChild(removeBtn);
+  }
+  wrap.appendChild(title);
+
+  const sourceRow = document.createElement("div");
+  sourceRow.className = "metric-def-source-row";
+  if (opts.editableSource) {
+    const label2 = document.createElement("span");
+    label2.textContent = "対象: ";
+    sourceRow.appendChild(label2);
+    const sel = document.createElement("select");
+    [
+      ["list", "リストデータシート"],
+      ["remaining", "残量シート"],
+    ].forEach(([val, txt]) => {
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = txt;
+      if ((def.source || fixedSource) === val) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", (e) => {
+      def.source = e.target.value;
+      def.columns = [];
+      onChange(def, { rerender: true });
+    });
+    sourceRow.appendChild(sel);
+  } else {
+    sourceRow.textContent = `対象: ${fixedSource === "remaining" ? "残量シート" : "リストデータシート"}`;
+  }
+  wrap.appendChild(sourceRow);
+
+  const opRow = document.createElement("div");
+  opRow.className = "metric-def-op-row";
+  const opLabel = document.createElement("span");
+  opLabel.textContent = "計算方法: ";
+  opRow.appendChild(opLabel);
+  const opSel = document.createElement("select");
+  [
+    ["sum", "合計(選んだ列の合計)"],
+    ["diff", "差(1列目 − 2列目)"],
+    ["ratio", "割合(1列目 ÷ 2列目 × 100)"],
+  ].forEach(([val, txt]) => {
+    const o = document.createElement("option");
+    o.value = val;
+    o.textContent = txt;
+    if ((def.op || "sum") === val) o.selected = true;
+    opSel.appendChild(o);
+  });
+  opSel.addEventListener("change", (e) => {
+    def.op = e.target.value;
+    onChange(def, { rerender: false });
+  });
+  opRow.appendChild(opSel);
+  wrap.appendChild(opRow);
+
+  const colsRow = document.createElement("div");
+  colsRow.className = "metric-def-columns";
+  const source = def.source || fixedSource;
+  const options = getAvailableColumnsForSource(source);
+  const selected = new Set(def.columns || []);
+  if (options.length === 0) {
+    const span = document.createElement("span");
+    span.className = "muted-inline";
+    span.textContent = "対象シートに数値列が見つかりません";
+    colsRow.appendChild(span);
+  }
+  options.forEach((name) => {
+    const idSafe = `coldef-${key}-${name}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const lbl = document.createElement("label");
+    lbl.className = "chip";
+    lbl.innerHTML = `<input type="checkbox" id="${idSafe}" ${selected.has(name) ? "checked" : ""}/> ${escapeHtml(name)}`;
+    lbl.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) selected.add(name);
+      else selected.delete(name);
+      def.columns = Array.from(selected);
+      onChange(def, { rerender: false });
+    });
+    colsRow.appendChild(lbl);
+  });
+  wrap.appendChild(colsRow);
+
+  const hint = document.createElement("p");
+  hint.className = "muted-inline";
+  hint.textContent = "「差」「割合」の場合は、チェックした先頭2つの列(1列目→2列目の順)が使われます。";
+  wrap.appendChild(hint);
+
+  return wrap;
+}
+
+function buildAddCustomMetricForm(onAdd) {
+  const wrap = document.createElement("div");
+  wrap.className = "add-custom-metric-form";
+
+  const title = document.createElement("div");
+  title.className = "control-label";
+  title.textContent = "新しい項目を追加";
+  wrap.appendChild(title);
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "項目名(例: 回収率)";
+  wrap.appendChild(nameInput);
+
+  const status = document.createElement("span");
+  status.className = "muted-inline";
+  wrap.appendChild(status);
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "btn-secondary";
+  addBtn.textContent = "追加";
+  addBtn.addEventListener("click", () => {
+    const label = nameInput.value.trim();
+    if (!label) {
+      status.textContent = "項目名を入力してください";
+      return;
+    }
+    const key = `custom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    onAdd({ key, label, source: "list", op: "sum", columns: [] });
+    nameInput.value = "";
+    status.textContent = "";
+  });
+  wrap.appendChild(addBtn);
+  return wrap;
+}
+
+function renderColumnDefsPanel() {
+  const container = $("#column-defs-panel");
+  if (!container) return;
+  if (!state.loaded) {
+    container.innerHTML = `<p class="muted-inline">データ読み込み後に設定できます</p>`;
+    return;
+  }
+  container.innerHTML = "";
+  const defs = getColumnDefs();
+  const customDefs = getCustomMetricDefs();
+
+  BASE_METRIC_KEYS.forEach((meta) => {
+    if (!defs[meta.key]) defs[meta.key] = { source: meta.source, op: "sum", columns: [] };
+    const row = buildMetricDefRow(meta.key, meta.label, meta.source, defs[meta.key], (def, opts) => {
+      saveColumnDefs(defs);
+      if (opts && opts.rerender) renderColumnDefsPanel();
+      afterColumnDefsChanged();
+    });
+    container.appendChild(row);
+  });
+
+  if (customDefs.length > 0) {
+    const customWrap = document.createElement("div");
+    customWrap.className = "custom-metric-list";
+    customDefs.forEach((c) => {
+      const row = buildMetricDefRow(c.key, c.label, c.source, c, (def, opts) => {
+        saveCustomMetricDefs(customDefs);
+        if (opts && opts.rerender) renderColumnDefsPanel();
+        afterColumnDefsChanged();
+      }, {
+        removable: true,
+        editableLabel: true,
+        editableSource: true,
+        onRemove: () => {
+          const idx = customDefs.findIndex((x) => x.key === c.key);
+          if (idx >= 0) customDefs.splice(idx, 1);
+          if (state.report.visibleColumns) state.report.visibleColumns.delete(c.key);
+          saveCustomMetricDefs(customDefs);
+          saveVisibleColumns();
+          renderColumnDefsPanel();
+          afterColumnDefsChanged();
+        },
+      });
+      customWrap.appendChild(row);
+    });
+    container.appendChild(customWrap);
+  }
+
+  const addForm = buildAddCustomMetricForm((newMetric) => {
+    customDefs.push(newMetric);
+    if (state.report.visibleColumns) state.report.visibleColumns.add(newMetric.key);
+    saveCustomMetricDefs(customDefs);
+    saveVisibleColumns();
+    renderColumnDefsPanel();
+    afterColumnDefsChanged();
+  });
+  container.appendChild(addForm);
+}
+
+$("#column-defs-reset").addEventListener("click", () => {
+  try {
+    localStorage.removeItem(COLUMN_DEFS_STORAGE_KEY);
+  } catch (e) {
+    // 無視(プライベートブラウジング等)
+  }
+  _columnDefsCache = null;
+  ensureColumnDefsSeeded();
+  renderColumnDefsPanel();
+  afterColumnDefsChanged();
+});
+
+function renderVisibleColumnsPanel() {
+  const container = $("#visible-columns-panel");
+  if (!container) return;
+  if (!state.loaded) {
+    container.innerHTML = `<p class="muted-inline">データ読み込み後に設定できます</p>`;
+    return;
+  }
+  container.innerHTML = "";
+  if (!state.report.visibleColumns) ensureVisibleColumnsSeeded();
+  const customDefs = getCustomMetricDefs();
+  const list = getDisplayableColumnList(customDefs);
+  list.forEach((col) => {
+    const id = `viscol-${col.key}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const label = document.createElement("label");
+    label.className = "chip";
+    const checked = state.report.visibleColumns.has(col.key);
+    label.innerHTML = `<input type="checkbox" id="${id}" ${checked ? "checked" : ""}/> ${escapeHtml(col.label)}`;
+    label.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) state.report.visibleColumns.add(col.key);
+      else state.report.visibleColumns.delete(col.key);
+      saveVisibleColumns();
+      renderSummary();
+    });
+    container.appendChild(label);
+  });
+}
+
 function computeAreaReport() {
   const area = state.report.area;
   if (!area) return { error: "エリアがありません" };
@@ -1071,50 +1530,48 @@ function computeAreaReport() {
     return { error: `エリア「${area}」に「リストデータ」または「残量」という名前のシートが見つかりません` };
   }
 
-  const remainingCol = state.report.remainingColumn;
-  const absentCol = state.report.absentColumn;
-  const notCalledCol = state.report.notCalledColumn;
-  const tossupCol = state.report.tossupColumn || null;
-  const appoCol = state.report.appoColumn || null;
-  const approachNgCol = state.report.approachNgColumn || null;
-  const honshiNgCol = state.report.honshiNgColumn || null;
-  const closingNgCol = state.report.closingNgColumn || null;
-  const extraCols = Array.from(state.report.extraColumns);
+  const defs = getColumnDefs();
+  const customDefs = getCustomMetricDefs();
+  const extraCols = customDefs.map((c) => c.key);
+  const customDefMap = Object.fromEntries(customDefs.map((c) => [c.key, c]));
   const industryNames = getIndustryNames(remainingSheet);
 
-  const listColumnsNeeded = new Set([absentCol, notCalledCol, ...extraCols]);
-  if (tossupCol) listColumnsNeeded.add(tossupCol);
-  if (appoCol) listColumnsNeeded.add(appoCol);
-  if (approachNgCol) listColumnsNeeded.add(approachNgCol);
-  if (honshiNgCol) listColumnsNeeded.add(honshiNgCol);
-  if (closingNgCol) listColumnsNeeded.add(closingNgCol);
+  // リストデータシート・残量シートそれぞれから、どの生の列(合計値)を集計しておく必要があるかを洗い出す
+  const listColsNeeded = new Set();
+  const remainingColsNeeded = new Set(industryNames); // 業種列(残量シートのE列以降)は常に必要
+  const allDefs = [...BASE_METRIC_KEYS.map((m) => defs[m.key]), ...customDefs];
+  allDefs.forEach((def) => {
+    if (!def || !def.columns) return;
+    const set = def.source === "remaining" ? remainingColsNeeded : listColsNeeded;
+    def.columns.forEach((c) => set.add(c));
+  });
 
-  const remainingMap = remainingCol ? buildValueMap(remainingSheet, [remainingCol]) : new Map();
-  const listMap = buildValueMap(listSheet, Array.from(listColumnsNeeded));
-  const validResultMap = buildValidResultMap(listSheet, VALID_RESULT_COL_START, VALID_RESULT_COL_END);
-  // 残量シートのE列以降(業種名の列)を、リスト名+都道府県ごとに集計したMap
-  const industryMap = industryNames.length ? buildValueMap(remainingSheet, industryNames) : new Map();
+  const remainingMap = buildValueMap(remainingSheet, Array.from(remainingColsNeeded));
+  const listMap = buildValueMap(listSheet, Array.from(listColsNeeded));
 
-  const allKeys = new Set([...remainingMap.keys(), ...listMap.keys(), ...validResultMap.keys(), ...industryMap.keys()]);
+  const allKeys = new Set([...remainingMap.keys(), ...listMap.keys()]);
   // listName -> Map(pref -> {remaining, absent, notCalled, tossup, appo, approachNg, honshiNg, closingNg, validCount, extra, industry})
   const byList = new Map();
 
   allKeys.forEach((key) => {
     const [listName, pref] = key.split(SEP);
     if (!byList.has(listName)) byList.set(listName, new Map());
-    const remaining = remainingMap.get(key)?.[remainingCol] || 0;
-    const absent = listMap.get(key)?.[absentCol] || 0;
-    const notCalled = listMap.get(key)?.[notCalledCol] || 0;
-    const tossup = tossupCol ? listMap.get(key)?.[tossupCol] || 0 : 0;
-    const appo = appoCol ? listMap.get(key)?.[appoCol] || 0 : 0;
-    const approachNg = approachNgCol ? listMap.get(key)?.[approachNgCol] || 0 : 0;
-    const honshiNg = honshiNgCol ? listMap.get(key)?.[honshiNgCol] || 0 : 0;
-    const closingNg = closingNgCol ? listMap.get(key)?.[closingNgCol] || 0 : 0;
-    const validCount = validResultMap.get(key) || 0;
+    const listVals = listMap.get(key) || {};
+    const remVals = remainingMap.get(key) || {};
+
+    const remaining = computeDefValue(defs.remaining, listVals, remVals);
+    const absent = computeDefValue(defs.absent, listVals, remVals);
+    const notCalled = computeDefValue(defs.notCalled, listVals, remVals);
+    const tossup = computeDefValue(defs.tossup, listVals, remVals);
+    const appo = computeDefValue(defs.appo, listVals, remVals);
+    const approachNg = computeDefValue(defs.approachNg, listVals, remVals);
+    const honshiNg = computeDefValue(defs.honshiNg, listVals, remVals);
+    const closingNg = computeDefValue(defs.closingNg, listVals, remVals);
+    const validCount = computeDefValue(defs.validCount, listVals, remVals);
     const extra = {};
-    extraCols.forEach((c) => (extra[c] = listMap.get(key)?.[c] || 0));
+    customDefs.forEach((c) => (extra[c.key] = computeDefValue(c, listVals, remVals)));
     const industry = {};
-    industryNames.forEach((n) => (industry[n] = industryMap.get(key)?.[n] || 0));
+    industryNames.forEach((n) => (industry[n] = remVals[n] || 0));
     byList
       .get(listName)
       .set(pref, { remaining, absent, notCalled, tossup, appo, approachNg, honshiNg, closingNg, validCount, extra, industry });
@@ -1195,6 +1652,7 @@ function computeAreaReport() {
     "notCalled",
     "absent",
     "absent2",
+    "validCount",
     "validRate",
     "tossupRate",
     "appoRate",
@@ -1237,7 +1695,7 @@ function computeAreaReport() {
   // 表示条件(上限/下限による絞り込み)を適用する。ALL行(そのリストの全都道府県合計)の値で判定し、
   // 条件を満たさないリストは表示対象から除く(エリア全体の合計「grand」は絞り込み前の値のまま)。
   const totalListCount = listRows.length;
-  const displayListRows = listRows.filter((lr) => rowPassesRangeFilters(lr, industryNames));
+  const displayListRows = listRows.filter((lr) => rowPassesRangeFilters(lr, industryNames, extraCols));
 
   return {
     area,
@@ -1248,6 +1706,7 @@ function computeAreaReport() {
     filteredListCount: displayListRows.length,
     grand,
     extraCols,
+    customDefMap,
     industryNames,
   };
 }
@@ -1279,10 +1738,11 @@ function renderSummary() {
     panel.innerHTML = `<p class="muted">${escapeHtml(report.error)}</p>`;
     return;
   }
-  const { listRows, grand, extraCols, industryNames, totalListCount, filteredListCount } = report;
+  const { listRows, grand, extraCols, customDefMap, industryNames, totalListCount, filteredListCount } = report;
 
-  if (!state.report.remainingColumn) {
-    panel.innerHTML = `<p class="muted">残量シートに数値列が見つかりませんでした</p>`;
+  const remainingDef = getColumnDefs().remaining;
+  if (!remainingDef || !remainingDef.columns || remainingDef.columns.length === 0) {
+    panel.innerHTML = `<p class="muted">「残量」として使う列が設定されていません(上の「項目の定義を設定」から選択してください)</p>`;
     return;
   }
 
@@ -1330,22 +1790,16 @@ function renderSummary() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
+  const customDefs = extraCols.map((c) => customDefMap[c]).filter(Boolean);
+  const visible = state.report.visibleColumns || new Set(DEFAULT_VISIBLE_COLUMNS);
+  const visibleBuiltins = getDisplayableColumnList(customDefs).filter((h) => visible.has(h.key));
   const headers = [
     { key: "listName", label: "リスト名" },
     { key: "pref", label: "都道府県" },
-    { key: "remaining", label: "残量" },
-    { key: "notCalled", label: "未コール" },
-    { key: "absent", label: "不在" },
-    { key: "absent2", label: "不在2" },
-    { key: "validRate", label: "有効率" },
-    { key: "tossupRate", label: "トスアップ率" },
-    { key: "appoRate", label: "アポ率" },
-    { key: "approachNgRate", label: "アプローチNG率" },
-    { key: "honshiNgRate", label: "主旨NG率" },
-    { key: "closingNgRate", label: "クロージングNG率" },
-    ...extraCols.map((c) => ({ key: c, label: c })),
+    ...visibleBuiltins,
     ...industryNames.map((n) => ({ key: n, label: n })),
   ];
+  const cellCtx = { industryNames, customDefMap };
   headers.forEach((h) => {
     const th = document.createElement("th");
     if (h.key === "pref") {
@@ -1365,21 +1819,12 @@ function renderSummary() {
     const expanded = state.report.expandedLists.has(lr.listName);
     const tr = document.createElement("tr");
     tr.className = "report-all-row";
+    const allCtx = { ...cellCtx, maxRemaining, maxIndustry };
     tr.innerHTML =
       `<td class="pref-cell"><span class="row-toggle">${expanded ? "▼" : "▶"}</span>${escapeHtml(lr.listName)}</td>` +
       `<td class="pref-cell">ALL</td>` +
-      remainingCellHtml(lr.all, maxRemaining) +
-      `<td class="count-cell">${lr.all.notCalled}</td>` +
-      `<td class="count-cell">${lr.all.absent}</td>` +
-      `<td class="count-cell">${lr.all.absent2}</td>` +
-      gradedPctHtml(lr.all.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin) +
-      gradedPctHtml(lr.all.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin) +
-      `<td class="count-cell">${formatPct(lr.all.appoRate)}</td>` +
-      `<td class="count-cell">${formatPct(lr.all.approachNgRate)}</td>` +
-      `<td class="count-cell">${formatPct(lr.all.honshiNgRate)}</td>` +
-      `<td class="count-cell">${formatPct(lr.all.closingNgRate)}</td>` +
-      extraCols.map((c) => extraCellHtml(lr.all.extra[c], lr.all.extraPct[c])).join("") +
-      industryNames.map((n) => heatCellHtml(lr.all.industry[n], maxIndustry[n])).join("");
+      visibleBuiltins.map((h) => renderReportCell(h.key, lr.all, allCtx)).join("") +
+      industryNames.map((n) => renderReportCell(n, lr.all, allCtx)).join("");
     tr.addEventListener("click", () => {
       if (expanded) state.report.expandedLists.delete(lr.listName);
       else state.report.expandedLists.add(lr.listName);
@@ -1391,21 +1836,12 @@ function renderSummary() {
       lr.prefRows.forEach((pr) => {
         const subTr = document.createElement("tr");
         subTr.className = "report-pref-row";
+        const prefCtx = { ...cellCtx, maxRemaining: undefined, maxIndustry };
         subTr.innerHTML =
           `<td class="pref-cell"></td>` +
           `<td class="pref-cell">${escapeHtml(pr.pref)}</td>` +
-          remainingCellHtml(pr) +
-          `<td class="count-cell">${pr.notCalled}</td>` +
-          `<td class="count-cell">${pr.absent}</td>` +
-          `<td class="count-cell">${pr.absent2}</td>` +
-          gradedPctHtml(pr.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin) +
-          gradedPctHtml(pr.tossupRate, TOSSUP_RATE_THRESHOLDS.badMax, TOSSUP_RATE_THRESHOLDS.goodMin) +
-          `<td class="count-cell">${formatPct(pr.appoRate)}</td>` +
-          `<td class="count-cell">${formatPct(pr.approachNgRate)}</td>` +
-          `<td class="count-cell">${formatPct(pr.honshiNgRate)}</td>` +
-          `<td class="count-cell">${formatPct(pr.closingNgRate)}</td>` +
-          extraCols.map((c) => extraCellHtml(pr.extra[c], pr.extraPct[c])).join("") +
-          industryNames.map((n) => heatCellHtml(pr.industry[n], maxIndustry[n])).join("");
+          visibleBuiltins.map((h) => renderReportCell(h.key, pr, prefCtx)).join("") +
+          industryNames.map((n) => renderReportCell(n, pr, prefCtx)).join("");
         tbody.appendChild(subTr);
       });
     }
@@ -1420,9 +1856,9 @@ function renderSummary() {
   const note = document.createElement("p");
   note.className = "muted";
   note.textContent =
-    "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。未コール = リストデータの「未コール」列の値。不在2 = 不在 − 残量。" +
-    "有効結果 = リストデータのF列〜AC列(繋がった結果)の合計。有効率 = 有効結果 ÷ (不在 + 有効結果)。" +
-    "トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率・追加列の(%)はすべて対有効(÷有効結果)。列名に「アプローチNG」「主旨NG」「クロージングNG」を含む列を自動判定します(見つからない場合は「—」表示)。" +
+    "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。不在2 = 不在 − 残量。" +
+    "有効率 = 有効結果 ÷ (不在 + 有効結果)。トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率はすべて対有効(÷有効結果)。" +
+    "各項目がどの列から数値を拾うか、どの項目を表に表示するかは、上の「項目の定義を設定」「表示する項目を選択」から変更できます(この端末のブラウザにのみ保存されます)。" +
     "右側の業種別の列(飲食・和食など)は、残量シートのE列以降の値をそのリスト(行をクリックすると都道府県ごと)に集計した残量の内訳です。" +
     "残量・業種別のセルは、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで文字色が変化します(背景色は付きません)。" +
     "列見出しクリックで昇順・降順に並び替えできます(業種列も含め、どの項目でも切替可能)。既定(残量順)の並びでは、残量が同数の行を有効率→トスアップ率→アポ率の順で自動的に並び替えます。" +

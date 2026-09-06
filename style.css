@@ -431,6 +431,61 @@ th.sortable:hover { background: #f0f0f2; }
 }
 .range-filter-row .numeric-row { flex-shrink: 0; }
 
+.column-defs-panel {
+  min-width: 320px;
+  max-width: 420px;
+  max-height: 420px;
+}
+.metric-def-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.metric-def-row:last-child { border-bottom: none; }
+.metric-def-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.metric-def-name-input {
+  font-weight: 700;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.metric-def-source-row,
+.metric-def-op-row {
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.metric-def-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 4px 0;
+}
+.custom-metric-list {
+  margin-top: 4px;
+}
+.add-custom-metric-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 2px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.add-custom-metric-form input[type="text"] {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
 .changelog-list {
   display: flex;
   flex-direction: column;
