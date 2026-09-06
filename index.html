@@ -91,6 +91,16 @@
         <button id="strategy-mode-honshi" class="tab-btn">主旨ベース(決裁者有効)</button>
         <label class="chip"><input type="checkbox" id="strategy-only-recommended" /> このクールにおすすめの業種のみ表示</label>
       </div>
+      <div class="control-block">
+        <div class="control-label">
+          表示条件で絞り込み(項目ごとに「〇件〜〇件」「〇%〜〇%」のように上限・下限を指定できます。片方だけの指定も可能)
+          <button id="strategy-range-reset" class="btn-link">条件をリセット</button>
+        </div>
+        <details class="col-picker">
+          <summary>表示条件を設定 ▾</summary>
+          <div id="strategy-range-filters" class="col-picker-panel range-filter-panel"></div>
+        </details>
+      </div>
       <div id="strategy-panel"></div>
     </section>
 

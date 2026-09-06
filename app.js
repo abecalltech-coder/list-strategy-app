@@ -60,6 +60,7 @@ const state = {
     onlyRecommended: false, // 選択中クールにおすすめの業種のリストのみ表示するか
     tableSize: { height: null },
     columnWidths: {},
+    rangeFilters: {}, // key -> { min, max } 表示条件(集計タブと同様。上限/下限どちらか片方だけの指定も可)
   },
 };
 
@@ -179,6 +180,7 @@ async function loadAll() {
     renderSummary();
     renderAnalysis();
     renderStrategyCoolSwitcher();
+    renderStrategyRangeFilters();
     renderStrategy();
   } catch (err) {
     console.error(err);
@@ -368,6 +370,7 @@ function renderAreaSwitcher() {
       state.report.expandedLists = new Set();
       state.report.rangeFilters = {};
       state.analysis.expandedLists = new Set();
+      state.strategy.rangeFilters = {};
       afterIncludedSheetsChanged();
     });
     container.appendChild(btn);
@@ -382,6 +385,7 @@ function afterIncludedSheetsChanged() {
   renderDetailTable();
   renderSummary();
   renderAnalysis();
+  renderStrategyRangeFilters();
   renderStrategy();
 }
 
@@ -1746,6 +1750,72 @@ function dominantIndustryName(industryObj) {
   return best;
 }
 
+// 「クール戦略」タブの表示条件(上限/下限フィルター)で絞り込み可能な項目の一覧。
+// 集計タブと同じ考え方・同じUI部品を使うが、対象項目はクール戦略タブの表に実際に表示している列のみ。
+const STRATEGY_RANGE_FILTER_COLUMNS = [
+  { key: "remaining", label: "残量" },
+  { key: "validRate", label: "有効率" },
+  { key: "tossupRate", label: "トスアップ率" },
+  { key: "honshiNgRate", label: "主旨NG率" },
+  { key: "closingNgRate", label: "クロージングNG率" },
+];
+const STRATEGY_RANGE_FILTER_PERCENT_KEYS = new Set(["validRate", "tossupRate", "honshiNgRate", "closingNgRate"]);
+
+function rowPassesStrategyRangeFilters(row) {
+  for (const [key, f] of Object.entries(state.strategy.rangeFilters)) {
+    if (!f || (f.min === null && f.max === null)) continue;
+    const value = row[key];
+    if (value === null || value === undefined || isNaN(value)) return false;
+    if (f.min !== null && value < f.min) return false;
+    if (f.max !== null && value > f.max) return false;
+  }
+  return true;
+}
+
+// 「表示条件を設定」パネルの中身を描画する(項目一覧が固定のため、エリア切替時などに毎回作り直しても
+// 実質問題は無いが、集計タブと同じく頻繁な再描画のたびには作り直さない = 入力中の値を保持するため)
+function renderStrategyRangeFilters() {
+  const container = $("#strategy-range-filters");
+  if (!container) return;
+  container.innerHTML = "";
+
+  STRATEGY_RANGE_FILTER_COLUMNS.forEach((col) => {
+    if (!state.strategy.rangeFilters[col.key]) {
+      state.strategy.rangeFilters[col.key] = { min: null, max: null };
+    }
+    const f = state.strategy.rangeFilters[col.key];
+    const label = STRATEGY_RANGE_FILTER_PERCENT_KEYS.has(col.key) ? `${col.label}(%)` : col.label;
+
+    const row = document.createElement("div");
+    row.className = "range-filter-row";
+    row.innerHTML =
+      `<span class="range-filter-label">${escapeHtml(label)}</span>` +
+      `<span class="numeric-row">` +
+      `<input type="number" placeholder="下限" value="${f.min ?? ""}" />` +
+      `<span>〜</span>` +
+      `<input type="number" placeholder="上限" value="${f.max ?? ""}" />` +
+      `</span>`;
+    const [minInput, , maxInput] = row.querySelector(".numeric-row").children;
+    minInput.addEventListener("change", (e) => {
+      f.min = e.target.value === "" ? null : Number(e.target.value);
+      renderStrategy();
+    });
+    maxInput.addEventListener("change", (e) => {
+      f.max = e.target.value === "" ? null : Number(e.target.value);
+      renderStrategy();
+    });
+    container.appendChild(row);
+  });
+}
+
+$("#strategy-range-reset").addEventListener("click", () => {
+  Object.keys(state.strategy.rangeFilters).forEach((key) => {
+    state.strategy.rangeFilters[key] = { min: null, max: null };
+  });
+  renderStrategyRangeFilters();
+  renderStrategy();
+});
+
 function computeStrategyReport() {
   const base = computeAreaReport();
   if (base.error) return { error: base.error };
@@ -1756,7 +1826,7 @@ function computeStrategyReport() {
   }
 
   const mode = state.strategy.mode; // "validRate"(有効率ベース) | "honshi"(主旨ベース)
-  const rows = eligible.map((lr) => {
+  const allRows = eligible.map((lr) => {
     const domName = dominantIndustryName(lr.all.industry);
     return {
       listName: lr.listName,
@@ -1769,6 +1839,9 @@ function computeStrategyReport() {
       hint: classifyIndustry(domName),
     };
   });
+
+  // 表示条件(上限/下限)による絞り込み。残量>0の対象件数(totalEligible)は絞り込み前の値のまま。
+  const rows = allRows.filter((r) => rowPassesStrategyRangeFilters(r));
 
   const primaryKey = mode === "honshi" ? "honshiNgRate" : "validRate";
   const secondaryKey = mode === "honshi" ? "closingNgRate" : "tossupRate";
@@ -1784,7 +1857,13 @@ function computeStrategyReport() {
     ? rows.filter((r) => r.hint && (r.hint.bestCools || []).includes(cool))
     : rows;
 
-  return { mode, cool, rows: displayRows, totalEligible: rows.length };
+  return {
+    mode,
+    cool,
+    rows: displayRows,
+    totalEligible: allRows.length,
+    filteredEligible: rows.length,
+  };
 }
 
 // 「おすすめクール・メモ」セルのHTML。選択中クールに合っていれば「◎」を添える(背景色は付けない)。
@@ -1817,9 +1896,17 @@ function renderStrategy() {
     return;
   }
 
-  const { rows, cool, mode } = report;
+  const { rows, cool, mode, totalEligible, filteredEligible } = report;
+
+  if (filteredEligible < totalEligible) {
+    const notice = document.createElement("p");
+    notice.className = "row-count";
+    notice.textContent = `表示条件による絞り込み中: 残量ありの全${totalEligible}件中 ${filteredEligible}件が対象`;
+    panel.appendChild(notice);
+  }
+
   if (rows.length === 0) {
-    panel.innerHTML = `<p class="muted">条件に合うリストが見つかりません(「このクールにおすすめの業種のみ表示」のチェックを外すと全件表示されます)</p>`;
+    panel.innerHTML += `<p class="muted">条件に合うリストが見つかりません(表示条件や「このクールにおすすめの業種のみ表示」のチェックを見直すと表示されます)</p>`;
     return;
   }
 
