@@ -33,7 +33,7 @@ window.APP_CONFIG = {
   // 「ご要望・仕様変更のご依頼」フォームの送信先(Google Apps ScriptのWebアプリURL)。
   // 空欄のままだと、フォームの代わりにセットアップ手順の案内が表示されます。
   // 設定方法はREADME.mdの「変更履歴タブとご要望フォーム」を参照してください。
-  feedbackWebAppUrl: "",
+  feedbackWebAppUrl: "https://script.google.com/macros/s/AKfycbxxeElQDObTq4iOIDpV_Le9aarKd2S9UfKZMMKfPj_Wm--K7nn-SU9NNzI9CZdJfipP/exec",
 
   // 「変更履歴」タブに表示する、このシステムの変更履歴です。
   // 新しい機能を追加・変更するたびに、ここに1件ずつ追記していきます(古い順・新しい順どちらで書いてもOK、
