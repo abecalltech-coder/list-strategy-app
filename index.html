@@ -49,6 +49,7 @@
     <button class="main-tab-btn active" data-tab="summary">集計</button>
     <button class="main-tab-btn" data-tab="strategy">クール戦略</button>
     <button class="main-tab-btn" data-tab="detail">詳細データ</button>
+    <button class="main-tab-btn" data-tab="changelog">変更履歴</button>
   </nav>
 
   <main>
@@ -96,6 +97,21 @@
     <section id="tab-detail" class="main-tab-panel">
       <div id="detail-sheet-tabs" class="tab-row"></div>
       <div id="detail-panel"></div>
+    </section>
+
+    <section id="tab-changelog" class="main-tab-panel">
+      <div class="control-block">
+        <div class="control-label">変更履歴(このシステムの変更内容を日時順に記録しています)</div>
+        <div id="changelog-panel"></div>
+      </div>
+      <div class="control-block">
+        <div class="control-label">ご要望・仕様変更のご依頼</div>
+        <p class="muted">
+          「この項目も表示条件に追加してほしい」「この表現を変えてほしい」など、Listgramへのご要望はこちらからお送りください。
+          いただいた内容はスプレッドシート内の「要望ログ」シートに記録され、後ほど確認・対応いたします(このフォームからその場で自動的にシステムが変更されるわけではありません)。
+        </p>
+        <div id="feedback-form-container"></div>
+      </div>
     </section>
   </main>
 

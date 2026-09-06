@@ -1885,6 +1885,109 @@ function renderStrategy() {
 }
 
 // ------------------------------------------------------------
+// 変更履歴タブ・ご要望フォーム
+// (シートの読み込みとは無関係に、config.jsの内容だけで表示できる)
+// ------------------------------------------------------------
+
+function renderChangelog() {
+  renderChangelogList();
+  renderFeedbackForm();
+}
+
+function renderChangelogList() {
+  const panel = $("#changelog-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  const entries = [...((CONFIG && CONFIG.changelog) || [])].sort((a, b) => {
+    const aKey = `${a.date || ""} ${a.time || "00:00"}`;
+    const bKey = `${b.date || ""} ${b.time || "00:00"}`;
+    return bKey.localeCompare(aKey); // 新しい日時が上に来るように降順
+  });
+
+  if (entries.length === 0) {
+    panel.innerHTML = `<p class="muted">変更履歴はまだありません</p>`;
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "changelog-list";
+  entries.forEach((entry) => {
+    const item = document.createElement("div");
+    item.className = "changelog-item";
+    const dateLabel = entry.time ? `${entry.date} ${entry.time}` : entry.date || "";
+    item.innerHTML =
+      `<div class="changelog-date">${escapeHtml(dateLabel)}</div>` +
+      `<div class="changelog-title">${escapeHtml(entry.title || "")}</div>` +
+      (entry.description ? `<div class="changelog-desc">${escapeHtml(entry.description)}</div>` : "");
+    list.appendChild(item);
+  });
+  panel.appendChild(list);
+}
+
+// ご要望フォーム。config.jsのfeedbackWebAppUrlが未設定の場合は、代わりにセットアップ案内を表示する。
+// 送信は Google Apps Script の doPost(e) 宛てに fetch(mode: "no-cors") で行う仕様のため、
+// レスポンス内容は読み取れない(ブラウザの仕様上の制約)。そのため送信自体が例外を投げなければ
+// 「送信しました」と楽観的に表示する。
+function renderFeedbackForm() {
+  const container = $("#feedback-form-container");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const url = ((CONFIG && CONFIG.feedbackWebAppUrl) || "").trim();
+  if (!url) {
+    container.innerHTML =
+      `<p class="muted">ご要望フォームはまだセットアップされていません。config.jsの「feedbackWebAppUrl」を設定すると使えるようになります` +
+      `(手順はREADME.mdの「変更履歴タブとご要望フォーム」を参照してください)。</p>`;
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "feedback-form";
+  wrap.innerHTML =
+    `<label>お名前(任意)</label>` +
+    `<input type="text" id="feedback-name" placeholder="例: 阿部" />` +
+    `<label>ご要望・仕様変更のご依頼内容</label>` +
+    `<textarea id="feedback-message" rows="4" placeholder="どのタブの、どんな変更を希望するか具体的にご記入ください"></textarea>` +
+    `<button id="feedback-submit" class="btn-primary">送信する</button>` +
+    `<span id="feedback-status" class="muted-inline"></span>`;
+  container.appendChild(wrap);
+
+  $("#feedback-submit").addEventListener("click", () => submitFeedback(url));
+}
+
+async function submitFeedback(url) {
+  const nameInput = $("#feedback-name");
+  const messageInput = $("#feedback-message");
+  const statusEl = $("#feedback-status");
+  const message = messageInput.value.trim();
+
+  if (!message) {
+    statusEl.textContent = "内容を入力してください";
+    return;
+  }
+
+  statusEl.textContent = "送信中...";
+  try {
+    await fetch(url, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        name: nameInput.value.trim(),
+        message,
+        page: state.activeTab,
+        sentAt: new Date().toISOString(),
+      }),
+    });
+    statusEl.textContent = "送信しました。ご協力ありがとうございます。";
+    messageInput.value = "";
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "送信に失敗しました。時間をおいて再度お試しください。";
+  }
+}
+
+// ------------------------------------------------------------
 // タブ切り替え・初期化
 // ------------------------------------------------------------
 
@@ -2029,4 +2132,5 @@ function setupResizableColumns(table, theadRow, columns, widthsState) {
 $("#refresh-btn").addEventListener("click", loadAll);
 
 initTabs();
+renderChangelog(); // シートの読み込み成否に関わらず表示できるよう、loadAllとは独立して呼び出す
 loadAll();

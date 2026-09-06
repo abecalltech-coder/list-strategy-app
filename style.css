@@ -431,6 +431,57 @@ th.sortable:hover { background: #f0f0f2; }
 }
 .range-filter-row .numeric-row { flex-shrink: 0; }
 
+.changelog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.changelog-item {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.changelog-date {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.changelog-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.changelog-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.feedback-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 480px;
+}
+.feedback-form input[type="text"],
+.feedback-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+.feedback-form .btn-primary {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
 .grand-total-bar {
   display: flex;
   flex-wrap: wrap;
