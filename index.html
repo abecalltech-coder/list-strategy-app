@@ -67,6 +67,16 @@
         <button id="report-expand-all" class="btn-link">すべて展開</button>
         <button id="report-collapse-all" class="btn-link">すべて折りたたむ</button>
       </div>
+      <div class="control-block">
+        <div class="control-label">
+          表示条件で絞り込み(項目ごとに「〇件〜〇件」「〇%〜〇%」のように上限・下限を指定できます。片方だけの指定も可能)
+          <button id="report-range-reset" class="btn-link">条件をリセット</button>
+        </div>
+        <details class="col-picker">
+          <summary>表示条件を設定 ▾</summary>
+          <div id="report-range-filters" class="col-picker-panel range-filter-panel"></div>
+        </details>
+      </div>
       <div id="summary-panel"></div>
     </section>
 

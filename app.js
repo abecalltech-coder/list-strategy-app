@@ -45,6 +45,7 @@ const state = {
     sort: { key: "remaining", dir: "desc" },
     tableSize: { height: null }, // リスト毎表示の表の手動リサイズ後の高さ(null=既定)
     columnWidths: {}, // key -> px 列ごとの幅(ドラッグで変更した分を記憶)
+    rangeFilters: {}, // key -> { min, max } 表示条件(上限/下限。どちらか片方だけの指定も可)
   },
   analysis: {
     mode: "week", // "week"(週次) | "weekday"(曜日別)
@@ -365,6 +366,7 @@ function renderAreaSwitcher() {
       state.report.appoColumn = null;
       state.report.extraColumns = new Set();
       state.report.expandedLists = new Set();
+      state.report.rangeFilters = {};
       state.analysis.expandedLists = new Set();
       afterIncludedSheetsChanged();
     });
@@ -477,6 +479,7 @@ function refreshReportControls() {
   state.report.closingNgColumn =
     pickDefaultColumn(listNumericOptions, ["クロージングNG"], ["クロージングNG", "クロージング"], []) || "";
   state.report.extraColumns = new Set();
+  renderReportRangeFilters();
 }
 
 $("#report-expand-all").addEventListener("click", () => {
@@ -955,6 +958,94 @@ function getIndustryNames(title) {
   return names;
 }
 
+// 集計タブの「表示条件」で絞り込み可能な項目の一覧(業種列は呼び出し側でindustryNamesを追加する)
+const REPORT_RANGE_FILTER_BASE_COLUMNS = [
+  { key: "remaining", label: "残量" },
+  { key: "notCalled", label: "未コール" },
+  { key: "absent", label: "不在" },
+  { key: "absent2", label: "不在2" },
+  { key: "validRate", label: "有効率" },
+  { key: "tossupRate", label: "トスアップ率" },
+  { key: "appoRate", label: "アポ率" },
+  { key: "approachNgRate", label: "アプローチNG率" },
+  { key: "honshiNgRate", label: "主旨NG率" },
+  { key: "closingNgRate", label: "クロージングNG率" },
+];
+// このうち%表示の項目(表示条件のラベルに「(%)」を添えるため)
+const REPORT_RANGE_FILTER_PERCENT_KEYS = new Set([
+  "validRate",
+  "tossupRate",
+  "appoRate",
+  "approachNgRate",
+  "honshiNgRate",
+  "closingNgRate",
+]);
+
+// 現在のエリアで表示条件の対象になる項目一覧(基本項目 + 業種列)を返す
+function getReportRangeFilterColumns(industryNames) {
+  return [...REPORT_RANGE_FILTER_BASE_COLUMNS, ...industryNames.map((n) => ({ key: n, label: n }))];
+}
+
+// リストのALL行(全都道府県合計)の値が、state.report.rangeFiltersで指定した
+// すべての上限/下限条件を満たしているかどうかを判定する(上限・下限はどちらか片方だけでもよい)。
+function rowPassesRangeFilters(lr, industryNames) {
+  for (const [key, f] of Object.entries(state.report.rangeFilters)) {
+    if (!f || (f.min === null && f.max === null)) continue;
+    const value = industryNames.includes(key) ? lr.all.industry[key] : lr.all[key];
+    if (value === null || value === undefined || isNaN(value)) return false;
+    if (f.min !== null && value < f.min) return false;
+    if (f.max !== null && value > f.max) return false;
+  }
+  return true;
+}
+
+// 「表示条件を設定」パネルの中身を描画する(業種列の一覧が変わりうるエリア切替・シート変更のタイミングでのみ再構築し、
+// 並び替えなど頻繁な再描画のたびには再構築しない = 入力中の値がリセットされないようにするため)
+function renderReportRangeFilters() {
+  const container = $("#report-range-filters");
+  if (!container) return;
+  container.innerHTML = "";
+  const { remainingSheet } = getAreaSheetPair(state.report.area);
+  const industryNames = getIndustryNames(remainingSheet);
+  const columns = getReportRangeFilterColumns(industryNames);
+
+  columns.forEach((col) => {
+    if (!state.report.rangeFilters[col.key]) {
+      state.report.rangeFilters[col.key] = { min: null, max: null };
+    }
+    const f = state.report.rangeFilters[col.key];
+    const label = REPORT_RANGE_FILTER_PERCENT_KEYS.has(col.key) ? `${col.label}(%)` : col.label;
+
+    const row = document.createElement("div");
+    row.className = "range-filter-row";
+    row.innerHTML =
+      `<span class="range-filter-label">${escapeHtml(label)}</span>` +
+      `<span class="numeric-row">` +
+      `<input type="number" placeholder="下限" value="${f.min ?? ""}" />` +
+      `<span>〜</span>` +
+      `<input type="number" placeholder="上限" value="${f.max ?? ""}" />` +
+      `</span>`;
+    const [minInput, , maxInput] = row.querySelector(".numeric-row").children;
+    minInput.addEventListener("change", (e) => {
+      f.min = e.target.value === "" ? null : Number(e.target.value);
+      renderSummary();
+    });
+    maxInput.addEventListener("change", (e) => {
+      f.max = e.target.value === "" ? null : Number(e.target.value);
+      renderSummary();
+    });
+    container.appendChild(row);
+  });
+}
+
+$("#report-range-reset").addEventListener("click", () => {
+  Object.keys(state.report.rangeFilters).forEach((key) => {
+    state.report.rangeFilters[key] = { min: null, max: null };
+  });
+  renderReportRangeFilters();
+  renderSummary();
+});
+
 function computeAreaReport() {
   const area = state.report.area;
   if (!area) return { error: "エリアがありません" };
@@ -1127,7 +1218,22 @@ function computeAreaReport() {
     return 0;
   });
 
-  return { area, listSheet, remainingSheet, listRows, grand, extraCols, industryNames };
+  // 表示条件(上限/下限による絞り込み)を適用する。ALL行(そのリストの全都道府県合計)の値で判定し、
+  // 条件を満たさないリストは表示対象から除く(エリア全体の合計「grand」は絞り込み前の値のまま)。
+  const totalListCount = listRows.length;
+  const displayListRows = listRows.filter((lr) => rowPassesRangeFilters(lr, industryNames));
+
+  return {
+    area,
+    listSheet,
+    remainingSheet,
+    listRows: displayListRows,
+    totalListCount,
+    filteredListCount: displayListRows.length,
+    grand,
+    extraCols,
+    industryNames,
+  };
 }
 
 function toggleReportSort(key) {
@@ -1157,7 +1263,7 @@ function renderSummary() {
     panel.innerHTML = `<p class="muted">${escapeHtml(report.error)}</p>`;
     return;
   }
-  const { listRows, grand, extraCols, industryNames } = report;
+  const { listRows, grand, extraCols, industryNames, totalListCount, filteredListCount } = report;
 
   if (!state.report.remainingColumn) {
     panel.innerHTML = `<p class="muted">残量シートに数値列が見つかりませんでした</p>`;
@@ -1182,8 +1288,15 @@ function renderSummary() {
     `<span>クロージングNG率 <b>${formatPct(grand.closingNgRate)}</b></span>`;
   panel.appendChild(grandBar);
 
+  if (filteredListCount < totalListCount) {
+    const notice = document.createElement("p");
+    notice.className = "row-count";
+    notice.textContent = `表示条件による絞り込み中: 全${totalListCount}件中 ${filteredListCount}件を表示`;
+    panel.appendChild(notice);
+  }
+
   if (listRows.length === 0) {
-    panel.innerHTML += `<p class="muted">データがありません</p>`;
+    panel.innerHTML += `<p class="muted">表示条件に一致するリストがありません(条件をリセットすると全件表示されます)</p>`;
     return;
   }
 
