@@ -324,9 +324,20 @@ function groupSheetsByArea() {
 // 都道府県一覧(全シート横断)
 // ------------------------------------------------------------
 
+// 「トスアップログ」「要望ログ」など、リストデータではない(=B列が都道府県ではない)
+// メモ・記録用シートの名前一覧。都道府県フィルターの集計対象から除外するために使う。
+function getNonListSheetNames() {
+  const names = new Set();
+  names.add((CONFIG && CONFIG.logSheetName) || "トスアップログ");
+  names.add((CONFIG && CONFIG.feedbackSheetName) || "要望ログ");
+  return names;
+}
+
 function getAllPrefectures() {
   const set = new Set();
+  const excluded = getNonListSheetNames();
   for (const title of state.sheetOrder) {
+    if (excluded.has(title)) continue;
     for (const v of getColumnValues(title, CONFIG.prefectureColumnIndex)) {
       if (v !== "") set.add(String(v));
     }
