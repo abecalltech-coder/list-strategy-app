@@ -59,7 +59,13 @@
         <button id="analysis-mode-weekday" class="tab-btn">曜日別</button>
         <button id="analysis-expand-all" class="btn-link">すべて展開</button>
         <button id="analysis-collapse-all" class="btn-link">すべて折りたたむ</button>
+        <button id="analysis-manual-snapshot" class="btn-secondary">今すぐ記録する</button>
+        <span id="snapshot-trigger-status" class="muted-inline"></span>
       </div>
+      <p class="muted">
+        「トスアップログ」は既定では毎日朝7時ごろに自動で記録されますが、「今すぐ記録する」を押すと、その場で1回だけ手動で記録できます。
+        数字(トスアップ累計)に変更が無いリストは記録がスキップされるため、押しても意味の無い行が増えることはありません。
+      </p>
       <div id="analysis-panel"></div>
     </section>
 

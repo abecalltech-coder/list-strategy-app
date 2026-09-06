@@ -521,6 +521,7 @@ $("#analysis-collapse-all").addEventListener("click", () => {
   state.analysis.expandedLists = new Set();
   renderAnalysis();
 });
+$("#analysis-manual-snapshot").addEventListener("click", triggerManualSnapshot);
 
 $("#strategy-mode-valid").addEventListener("click", () => {
   state.strategy.mode = "validRate";
@@ -2011,7 +2012,7 @@ function renderChangelogList() {
   panel.appendChild(list);
 }
 
-// ご要望フォーム。config.jsのfeedbackWebAppUrlが未設定の場合は、代わりにセットアップ案内を表示する。
+// ご要望フォーム。config.jsのscriptWebAppUrlが未設定の場合は、代わりにセットアップ案内を表示する。
 // 送信は Google Apps Script の doPost(e) 宛てに fetch(mode: "no-cors") で行う仕様のため、
 // レスポンス内容は読み取れない(ブラウザの仕様上の制約)。そのため送信自体が例外を投げなければ
 // 「送信しました」と楽観的に表示する。
@@ -2020,10 +2021,10 @@ function renderFeedbackForm() {
   if (!container) return;
   container.innerHTML = "";
 
-  const url = ((CONFIG && CONFIG.feedbackWebAppUrl) || "").trim();
+  const url = ((CONFIG && CONFIG.scriptWebAppUrl) || "").trim();
   if (!url) {
     container.innerHTML =
-      `<p class="muted">ご要望フォームはまだセットアップされていません。config.jsの「feedbackWebAppUrl」を設定すると使えるようになります` +
+      `<p class="muted">ご要望フォームはまだセットアップされていません。config.jsの「scriptWebAppUrl」を設定すると使えるようになります` +
       `(手順はREADME.mdの「変更履歴タブとご要望フォーム」を参照してください)。</p>`;
     return;
   }
@@ -2060,6 +2061,7 @@ async function submitFeedback(url) {
       mode: "no-cors",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
+        action: "feedback",
         name: nameInput.value.trim(),
         message,
         page: state.activeTab,
@@ -2071,6 +2073,40 @@ async function submitFeedback(url) {
   } catch (err) {
     console.error(err);
     statusEl.textContent = "送信に失敗しました。時間をおいて再度お試しください。";
+  }
+}
+
+// 「分析」タブの「今すぐ記録する」ボタン。config.jsのscriptWebAppUrlに設定したGoogle Apps Scriptの
+// doPost(e)へ { action: "recordSnapshot" } を送り、スプレッドシート側で即座にrecordDailySnapshot()を
+// 実行させる(本来は毎日決まった時刻に自動実行されるものを、その場で手動実行するためのボタン)。
+// ご要望フォームと同様にfetch(mode: "no-cors")のためレスポンス内容は読み取れず、送信自体が
+// 例外を投げなければ楽観的に「リクエストしました」と表示する。実際に反映されたかどうかは、
+// 「再読み込み」ボタンでシートを読み直すか、スプレッドシート側の「トスアップログ」で確認できる。
+async function triggerManualSnapshot() {
+  const statusEl = $("#snapshot-trigger-status");
+  const url = ((CONFIG && CONFIG.scriptWebAppUrl) || "").trim();
+  if (!url) {
+    if (statusEl) {
+      statusEl.textContent =
+        "セットアップされていません(config.jsの「scriptWebAppUrl」を設定すると使えるようになります)";
+    }
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = "記録をリクエスト中...";
+  try {
+    await fetch(url, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "recordSnapshot", sentAt: new Date().toISOString() }),
+    });
+    if (statusEl) {
+      statusEl.textContent = "記録をリクエストしました。数秒待ってから「再読み込み」ボタンを押すと反映されます。";
+    }
+  } catch (err) {
+    console.error(err);
+    if (statusEl) statusEl.textContent = "リクエストに失敗しました。時間をおいて再度お試しください。";
   }
 }
 
