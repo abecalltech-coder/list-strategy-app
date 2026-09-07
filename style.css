@@ -432,6 +432,27 @@ th.sortable:hover { background: #f0f0f2; }
 }
 .range-filter-row .numeric-row { flex-shrink: 0; }
 
+.visible-columns-panel {
+  min-width: 260px;
+  max-height: 320px;
+}
+.visible-col-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  cursor: pointer;
+}
+.visible-col-row:last-child { border-bottom: none; }
+.visible-col-row:hover { background: #f8f8fa; }
+.visible-col-label {
+  flex: 1;
+  color: var(--text);
+}
+
 .column-defs-panel {
   min-width: 320px;
   max-width: 420px;
@@ -464,9 +485,25 @@ th.sortable:hover { background: #f0f0f2; }
 }
 .metric-def-columns {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+}
+.metric-def-source-group {
+  background: #f8f8fa;
+  border-radius: 6px;
+  padding: 5px 7px;
+}
+.metric-def-source-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.metric-def-source-group-chips {
+  display: flex;
   flex-wrap: wrap;
   gap: 4px 6px;
-  margin: 4px 0;
 }
 .custom-metric-list {
   margin-top: 4px;
