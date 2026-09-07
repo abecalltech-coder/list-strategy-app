@@ -57,7 +57,7 @@ const state = {
     rangeFilters: {}, // key -> { min, max } 表示条件(上限/下限。どちらか片方だけの指定も可)
   },
   analysis: {
-    mode: "week", // "week"(週次) | "weekday"(曜日別)
+    mode: "week", // "day"(日次) | "week"(週次) | "weekday"(曜日別)
     expandedLists: new Set(), // 都道府県の内訳を開いているリスト名
     sort: { key: null, dir: "desc" }, // null=既定(現在の累計が多い順)
     tableSize: { height: null },
@@ -719,18 +719,16 @@ function setReportRowMode(mode) {
 $("#report-row-list").addEventListener("click", () => setReportRowMode("list"));
 $("#report-row-industry").addEventListener("click", () => setReportRowMode("industry"));
 
-$("#analysis-mode-week").addEventListener("click", () => {
-  state.analysis.mode = "week";
-  $("#analysis-mode-week").classList.add("active");
-  $("#analysis-mode-weekday").classList.remove("active");
+function setAnalysisMode(mode) {
+  state.analysis.mode = mode;
+  $("#analysis-mode-day").classList.toggle("active", mode === "day");
+  $("#analysis-mode-week").classList.toggle("active", mode === "week");
+  $("#analysis-mode-weekday").classList.toggle("active", mode === "weekday");
   renderAnalysis();
-});
-$("#analysis-mode-weekday").addEventListener("click", () => {
-  state.analysis.mode = "weekday";
-  $("#analysis-mode-weekday").classList.add("active");
-  $("#analysis-mode-week").classList.remove("active");
-  renderAnalysis();
-});
+}
+$("#analysis-mode-day").addEventListener("click", () => setAnalysisMode("day"));
+$("#analysis-mode-week").addEventListener("click", () => setAnalysisMode("week"));
+$("#analysis-mode-weekday").addEventListener("click", () => setAnalysisMode("weekday"));
 $("#analysis-expand-all").addEventListener("click", () => {
   const report = computeAnalysisReport();
   if (!report.error) {
@@ -2127,7 +2125,7 @@ function renderSummaryByIndustry(panel) {
 }
 
 // ------------------------------------------------------------
-// 描画: 分析タブ(日次スナップショットの週次/曜日別集計)
+// 描画: 分析タブ(日次スナップショットの日次/週次/曜日別集計)
 //
 // スプレッドシート側でGoogle Apps Script(お渡ししたスクリプト)を設定すると、
 // 毎日自動的に config.js の logSheetName で指定したシート(既定「トスアップログ」)へ
@@ -2179,6 +2177,16 @@ function getWeekdayLabel(date) {
   return WEEKDAY_LABELS_BY_JS_DAY[date.getUTCDay()];
 }
 
+// 日次のラベル(例: "9/5(金)")。年をまたぐ場合も月/日だけで一意に区別できるよう、
+// 実際にはソートに日付そのもの(getDaySortValue)を使うため表示上の混同は起きない。
+function getDayLabel(date) {
+  const wd = WEEKDAY_LABELS_BY_JS_DAY[date.getUTCDay()];
+  return `${date.getUTCMonth() + 1}/${date.getUTCDate()}(${wd})`;
+}
+function getDaySortValue(date) {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
 function analysisSortArrow(key) {
   const curKey = state.analysis.sort.key || "cumulative";
   if (curKey !== key) return "";
@@ -2223,10 +2231,10 @@ function computeAnalysisReport() {
     };
   }
 
-  const mode = state.analysis.mode;
+  const mode = state.analysis.mode; // "day"(日次) | "week"(週次) | "weekday"(曜日別)
   const byList = new Map(); // listName -> Map(pref -> { cols: {label->合計}, latestCumulative, latestDate })
   const columnKeys = new Set();
-  const weekSortKey = new Map(); // 週ラベル -> ソート用タイムスタンプ
+  const dateSortKey = new Map(); // 週/日ラベル -> ソート用タイムスタンプ(週次・日次モードのみ使う)
 
   rows.forEach((cells) => {
     if (idx.area !== -1) {
@@ -2245,9 +2253,13 @@ function computeAnalysisReport() {
     const delta = isNaN(deltaRaw) ? 0 : deltaRaw;
     const cumulativeRaw = idx.cumulative !== -1 ? parseFloat(cells[idx.cumulative]) : NaN;
 
-    const colKey = mode === "week" ? getWeekLabel(date) : getWeekdayLabel(date);
+    let colKey;
+    if (mode === "week") colKey = getWeekLabel(date);
+    else if (mode === "day") colKey = getDayLabel(date);
+    else colKey = getWeekdayLabel(date);
     columnKeys.add(colKey);
-    if (mode === "week") weekSortKey.set(colKey, getWeekMonday(date).getTime());
+    if (mode === "week") dateSortKey.set(colKey, getWeekMonday(date).getTime());
+    if (mode === "day") dateSortKey.set(colKey, getDaySortValue(date));
 
     if (!byList.has(listName)) byList.set(listName, new Map());
     const prefMap = byList.get(listName);
@@ -2261,9 +2273,9 @@ function computeAnalysisReport() {
   });
 
   const columns =
-    mode === "week"
-      ? Array.from(columnKeys).sort((a, b) => weekSortKey.get(a) - weekSortKey.get(b))
-      : WEEKDAY_ORDER.filter((w) => columnKeys.has(w));
+    mode === "weekday"
+      ? WEEKDAY_ORDER.filter((w) => columnKeys.has(w))
+      : Array.from(columnKeys).sort((a, b) => dateSortKey.get(a) - dateSortKey.get(b));
 
   const listRows = [];
   byList.forEach((prefMap, listName) => {
@@ -2393,8 +2405,8 @@ function renderAnalysis() {
   note.className = "muted";
   note.textContent =
     "行はリスト名単位(ALL=そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。" +
-    "「現在の累計」はトスアップの最新の累計値です。それ以外の列(週次表示なら「9/1週」のような週単位、曜日別表示なら「月」〜「日」)は、" +
-    "その期間に新たに増えたトスアップの合計(増加分)です。上部の「週次」「曜日別」ボタンで表示単位を切り替えられます。" +
+    "「現在の累計」はトスアップの最新の累計値です。それ以外の列(日次表示なら「9/5(金)」のような日単位、週次表示なら「9/1週」のような週単位、曜日別表示なら「月」〜「日」)は、" +
+    "その期間に新たに増えたトスアップの合計(増加分)です。上部の「日次」「週次」「曜日別」ボタンで表示単位を切り替えられます。" +
     "セルは、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで文字色が変化します(背景色は付きません)。" +
     "列見出しクリックでその項目を基準に並び替えできます。";
   panel.appendChild(note);
