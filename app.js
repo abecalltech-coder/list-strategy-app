@@ -15,6 +15,10 @@ const CONFIG = window.APP_CONFIG;
 const VALID_RESULT_COL_START = 5; // F列(0始まり: A=0, B=1, C=2, D=3, E=4, F=5)
 const VALID_RESULT_COL_END = 28; // AC列(0始まり: ... Z=25, AA=26, AB=27, AC=28)
 
+// 「リストデータ未コール」(業種未コールシート側の未コール数との突き合わせ確認用)は、
+// リストデータシートのD列(0始まり: 3)を機械的に読む。
+const NOT_CALLED_LIST_RAW_COL_INDEX = 3; // D列
+
 // 残量系の内訳は「【エリア】業種未コール」「【エリア】業種不在1」「【エリア】業種不在2」
 // 「【エリア】業種不在3以上」という4枚のシートに分かれている。各シートは従来の業種別残量シートと
 // 同じ構造(業種の内訳列 + 一番後ろの「合計」列)で、その合計列がそのカテゴリの残量数になる。
@@ -88,6 +92,9 @@ const VISIBLE_COLUMNS_STORAGE_KEY = "listgram.visibleColumns.v2";
 // source: "list"(リストデータシート) | "notCalled"/"absent1"/"absent2"/"absent3plus"(業種別の4シート)
 const BASE_METRIC_KEYS = [
   { key: "notCalled", label: "未コール", source: "notCalled" },
+  // リストデータシートのD列(0始まりの列インデックスで3)にある未コール数。業種別シート側の
+  // 「未コール」(合計列)と本来一致するはずの数値のため、突き合わせ確認用に別項目として表示する。
+  { key: "notCalledListRaw", label: "リストデータ未コール", source: "list" },
   { key: "absent1", label: "不在1", source: "absent1" },
   { key: "absent2", label: "不在2", source: "absent2" },
   { key: "absent3plus", label: "不在3以上", source: "absent3plus" },
@@ -144,6 +151,7 @@ function pickCategoryDefaultColumn(title) {
 // - 未コール・不在1〜3以上: 業種別シートの「合計」列(無ければ最後の数値列)
 // - トスアップ・アポ・アプローチNG・主旨NG・クロージングNG: リストデータシートの列名が一致するもの
 // - 有効結果: リストデータシートのF列〜AC列(架電結果が繋がった項目群)を機械的に合計
+// - リストデータ未コール: リストデータシートのD列をそのまま(業種未コールシート側の未コールとの突き合わせ確認用)
 function computeColumnDefs() {
   const listTitles = getAllSheetTitlesByType("list");
   const listSheet = listTitles[0] || null;
@@ -180,6 +188,11 @@ function computeColumnDefs() {
   defs.approachNg = { op: "sum", columns: col("list", approachNgDefault) };
   defs.honshiNg = { op: "sum", columns: col("list", honshiNgDefault) };
   defs.closingNg = { op: "sum", columns: col("list", closingNgDefault) };
+
+  // リストデータ未コール: 列名は見ず、D列(0始まりインデックス3)をそのまま使う
+  const notCalledListRawCol =
+    listSheet && state.sheets[listSheet] && state.sheets[listSheet].headers[NOT_CALLED_LIST_RAW_COL_INDEX];
+  defs.notCalledListRaw = { op: "sum", columns: col("list", notCalledListRawCol || null) };
   return defs;
 }
 
@@ -1043,6 +1056,7 @@ function heatCellHtml(value, max) {
 const ROW_LIST_BUILTIN_COLUMNS = [
   { key: "dialable", label: "架電可能数" },
   { key: "notCalled", label: "未コール" },
+  { key: "notCalledListRaw", label: "リストデータ未コール" },
   { key: "absent1", label: "不在1" },
   { key: "absent2", label: "不在2" },
   { key: "absent3plus", label: "不在3以上" },
@@ -1166,6 +1180,9 @@ function renderReportCell(key, obj, ctx) {
       return countWithPctHtml(obj[key], obj.dialable, ctx.maxCategory ? ctx.maxCategory[key] : undefined);
     case "validCount":
       return countWithPctHtml(obj.validCount, undefined);
+    case "notCalledListRaw":
+      // 業種未コールシート側の「未コール」との突き合わせ確認用のため、%は付けずそのまま数値だけ表示する
+      return countWithPctHtml(obj.notCalledListRaw, undefined);
     case "validRate":
       return gradedPctHtml(obj.validRate, VALID_RATE_THRESHOLDS.badMax, VALID_RATE_THRESHOLDS.goodMin);
     case "tossupRate":
@@ -1586,6 +1603,7 @@ function computeAreaReport() {
   const simpleKeys = [
     "dialable",
     "notCalled",
+    "notCalledListRaw",
     "absent1",
     "absent2",
     "absent3plus",
