@@ -7,9 +7,8 @@
 
 const CONFIG = window.APP_CONFIG;
 
-// 「有効結果」は現在、項目の定義設定(列名ベース、ユーザーが変更可能)で計算される。
-// 以下の2つは、初回起動時にまだ設定が無い場合だけ使う初期値の目安(リストデータシートの
-// F列〜AC列、0始まりの列インデックスで5〜28)。一度でも設定を保存すると使われなくなる。
+// 「有効結果」は、リストデータシートのF列〜AC列(0始まりの列インデックスで5〜28)を
+// 機械的に合計した固定ロジックで計算する(computeColumnDefs参照)。
 // トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率は
 // すべてこの「有効結果」に対する割合(対有効)として計算する。
 // 有効率 = 有効結果 ÷ (不在 + 有効結果)。
@@ -79,13 +78,10 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 // ------------------------------------------------------------
 // 項目の数値定義(どのシートのどの列から数値を拾うか)
-// ここで設定した内容は、この端末のブラウザ(localStorage)にのみ保存され、
-// 他の人や他の端末とは共有されません(画面ごとに個別に設定・運用する想定)。
+// 以前はブラウザごとに変更できる設定(項目の定義を設定)がありましたが、
+// 運用を簡単にするため廃止し、以下の固定ロジック(シート構造・列名ベースの自動判定)に一本化しています。
 // ------------------------------------------------------------
 
-// シート構成(残量シート1枚→業種別4シート)を変更したため、保存済みの設定は引き継がずv2として再度既定値から作り直す
-const COLUMN_DEFS_STORAGE_KEY = "listgram.columnDefs.v2";
-const CUSTOM_METRICS_STORAGE_KEY = "listgram.customMetrics.v2";
 const VISIBLE_COLUMNS_STORAGE_KEY = "listgram.visibleColumns.v2";
 
 // システム組み込みの基本項目一覧。
@@ -135,45 +131,20 @@ function saveToStorage(key, value) {
   }
 }
 
-let _columnDefsCache = null;
-function getColumnDefs() {
-  if (!_columnDefsCache) {
-    _columnDefsCache = loadFromStorage(COLUMN_DEFS_STORAGE_KEY, null) || {};
-  }
-  return _columnDefsCache;
-}
-function saveColumnDefs(defs) {
-  _columnDefsCache = defs;
-  saveToStorage(COLUMN_DEFS_STORAGE_KEY, defs);
-}
-
-let _customMetricsCache = null;
-function getCustomMetricDefs() {
-  if (!_customMetricsCache) {
-    _customMetricsCache = loadFromStorage(CUSTOM_METRICS_STORAGE_KEY, null) || [];
-  }
-  return _customMetricsCache;
-}
-function saveCustomMetricDefs(list) {
-  _customMetricsCache = list;
-  saveToStorage(CUSTOM_METRICS_STORAGE_KEY, list);
-}
-
 // 業種別4シート(未コール/不在1/不在2/不在3以上)それぞれの「合計」列(一番後ろの列)を、
-// そのカテゴリの既定の拾い先として選ぶ(無ければ最後の数値列)
+// そのカテゴリの拾い先として選ぶ(無ければ最後の数値列)
 function pickCategoryDefaultColumn(title) {
   const options = getOtherColumnNames(title, { numericOnly: true });
   if (options.length === 0) return null;
   return options.includes("合計") ? "合計" : options[options.length - 1];
 }
 
-// 初回のみ、旧来の自動判定と同じロジックで初期値を作り、以降はユーザーの設定を尊重する
-function ensureColumnDefsSeeded() {
-  const existing = loadFromStorage(COLUMN_DEFS_STORAGE_KEY, null);
-  if (existing) {
-    _columnDefsCache = existing;
-    return;
-  }
+// 各項目(未コール・不在1〜3以上・有効結果・トスアップ・アポ・各種NG)を、どのシートのどの列から
+// 拾うかを毎回自動判定して返す(固定ロジック。ユーザーがブラウザごとに変更することはできない)。
+// - 未コール・不在1〜3以上: 業種別シートの「合計」列(無ければ最後の数値列)
+// - トスアップ・アポ・アプローチNG・主旨NG・クロージングNG: リストデータシートの列名が一致するもの
+// - 有効結果: リストデータシートのF列〜AC列(架電結果が繋がった項目群)を機械的に合計
+function computeColumnDefs() {
   const listTitles = getAllSheetTitlesByType("list");
   const listSheet = listTitles[0] || null;
   const listNumericOptions = getOtherColumnNames(listSheet, { numericOnly: true });
@@ -209,7 +180,7 @@ function ensureColumnDefsSeeded() {
   defs.approachNg = { op: "sum", columns: col("list", approachNgDefault) };
   defs.honshiNg = { op: "sum", columns: col("list", honshiNgDefault) };
   defs.closingNg = { op: "sum", columns: col("list", closingNgDefault) };
-  saveColumnDefs(defs);
+  return defs;
 }
 
 function ensureVisibleColumnsSeeded() {
@@ -223,12 +194,6 @@ function ensureVisibleColumnsSeeded() {
 }
 function saveVisibleColumns() {
   saveToStorage(VISIBLE_COLUMNS_STORAGE_KEY, Array.from(state.report.visibleColumns));
-}
-
-// source値("list"またはCATEGORY_KEYSのいずれか)から画面表示用の日本語ラベルを返す
-function sourceLabel(source) {
-  const cat = CATEGORY_SHEET_DEFS.find((c) => c.key === source);
-  return cat ? `業種${cat.label}シート` : "リストデータシート";
 }
 
 // 演算(合計/差/割合)を適用する。values は columns の並び順に対応する数値の配列。
@@ -268,7 +233,7 @@ function pickListSheetFromTitles(titles) {
 }
 
 // エリアをまたいで、指定タイプ("list" | CATEGORY_KEYSのいずれか)に該当する全シート名を返す
-// (項目の定義設定画面で、選択できる列名の一覧を作るために使う。エリアが増えても自動的に対象になる)
+// (数値の拾い先を自動判定する際に使う。エリアが増えても自動的に対象になる)
 function getAllSheetTitlesByType(type) {
   const areaMap = groupSheetsByArea();
   const set = new Set();
@@ -281,16 +246,6 @@ function getAllSheetTitlesByType(type) {
       const listSheet = pickListSheetFromTitles(titles);
       if (listSheet) set.add(listSheet);
     }
-  });
-  return Array.from(set);
-}
-
-// 指定のシート種別("list"またはCATEGORY_KEYSのいずれか)で選択可能な列名一覧(全エリア横断・重複除去)を返す
-function getAvailableColumnsForSource(source) {
-  const titles = getAllSheetTitlesByType(source);
-  const set = new Set();
-  titles.forEach((t) => {
-    getOtherColumnNames(t, { numericOnly: true }).forEach((n) => set.add(n));
   });
   return Array.from(set);
 }
@@ -399,12 +354,10 @@ async function loadAll() {
       const firstArea = Array.from(groupSheetsByArea().keys())[0] || null;
       state.report.area = firstArea;
     }
-    ensureColumnDefsSeeded();
     if (!state.report.visibleColumns) ensureVisibleColumnsSeeded();
     renderAreaSwitcher();
     renderSheetSelector();
     renderGlobalPrefectureFilter();
-    renderColumnDefsPanel();
     renderVisibleColumnsPanel();
     renderReportRangeFilters();
     renderDetailSheetTabs();
@@ -1119,17 +1072,12 @@ const CATEGORY_COUNT_KEYS = new Set(CATEGORY_KEYS);
 // 業種別4シートのうち業種の内訳・合計以外に残っている数値列(例: レコード件数)を、
 // 「その他の項目」として自動検出する。戻り値は { source, name } の配列(sourceは"list"またはCATEGORY_KEYSのいずれか)。
 function getLeftoverListColumns() {
-  const defs = getColumnDefs();
+  const defs = computeColumnDefs();
   const claimed = { list: new Set() };
   CATEGORY_KEYS.forEach((k) => (claimed[k] = new Set()));
   [...CATEGORY_KEYS, "validCount", "tossup", "appo", "approachNg", "honshiNg", "closingNg"].forEach((k) => {
     ((defs[k] && defs[k].columns) || []).forEach((c) => {
       if (claimed[c.source]) claimed[c.source].add(c.name);
-    });
-  });
-  getCustomMetricDefs().forEach((c) => {
-    (c.columns || []).forEach((col) => {
-      if (claimed[col.source]) claimed[col.source].add(col.name);
     });
   });
 
@@ -1437,7 +1385,7 @@ function renderReportRangeFilters() {
   const { categorySheets } = getAreaSheetSet(state.report.area);
   const industryNames = getIndustryNames(getPrimaryIndustrySheet(categorySheets));
   const leftoverCols = getLeftoverListColumns();
-  const customDefs = getCustomMetricDefs();
+  const customDefs = [];
   const columns = getReportRangeFilterColumns(industryNames, leftoverCols, customDefs);
   const customDefMap = Object.fromEntries(customDefs.map((c) => [c.key, c]));
 
@@ -1480,255 +1428,8 @@ $("#report-range-reset").addEventListener("click", () => {
 });
 
 // ------------------------------------------------------------
-// 描画: 項目の定義・表示する項目を設定するパネル(集計タブ)
+// 描画: 表示する項目を設定するパネル(集計タブ)
 // ------------------------------------------------------------
-
-// 列の定義変更・表示項目変更のたびに、関係する画面をまとめて再描画する
-function afterColumnDefsChanged() {
-  renderReportRangeFilters();
-  renderVisibleColumnsPanel();
-  renderSummary();
-  renderStrategy(); // 残量・有効率などはクール戦略タブでも同じ定義を使っているため
-}
-
-// 「ソース(source)」+「そのソースで選べる列名一覧」を、リストデータ→業種別4シートの順に並べる。
-// 項目の定義パネルで、対象シートを先に選ばせず全シート横断で列を選べるようにするために使う。
-function getGroupedAvailableColumns() {
-  return ["list", ...CATEGORY_KEYS].map((source) => ({
-    source,
-    label: sourceLabel(source),
-    columns: getAvailableColumnsForSource(source),
-  }));
-}
-
-// { source, name } の配列 <-> チェックボックスのvalue文字列("source::name") を相互変換する
-function columnDefKey(source, name) {
-  return `${source}::${name}`;
-}
-function parseColumnDefKey(k) {
-  const idx = k.indexOf("::");
-  return { source: k.slice(0, idx), name: k.slice(idx + 2) };
-}
-
-// 1項目分の「計算方法・使う列(全シート横断)」を設定する行を作る
-// opts.editableLabel: 項目名を編集できるか(カスタム項目のみtrue)
-// opts.removable: 削除ボタンを出すか(カスタム項目のみtrue)
-function buildMetricDefRow(key, label, def, onChange, opts = {}) {
-  const wrap = document.createElement("div");
-  wrap.className = "metric-def-row";
-
-  const title = document.createElement("div");
-  title.className = "metric-def-title";
-  if (opts.editableLabel) {
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.value = label;
-    nameInput.className = "metric-def-name-input";
-    nameInput.addEventListener("change", (e) => {
-      def.label = e.target.value.trim() || label;
-      onChange(def, { rerender: false });
-    });
-    title.appendChild(nameInput);
-  } else {
-    const span = document.createElement("span");
-    span.textContent = label;
-    title.appendChild(span);
-  }
-  if (opts.removable) {
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "btn-link";
-    removeBtn.textContent = "削除";
-    removeBtn.addEventListener("click", opts.onRemove);
-    title.appendChild(removeBtn);
-  }
-  wrap.appendChild(title);
-
-  const opRow = document.createElement("div");
-  opRow.className = "metric-def-op-row";
-  const opLabel = document.createElement("span");
-  opLabel.textContent = "計算方法: ";
-  opRow.appendChild(opLabel);
-  const opSel = document.createElement("select");
-  [
-    ["sum", "合計(選んだ列の合計)"],
-    ["diff", "差(1列目 − 2列目)"],
-    ["ratio", "割合(1列目 ÷ 2列目 × 100)"],
-  ].forEach(([val, txt]) => {
-    const o = document.createElement("option");
-    o.value = val;
-    o.textContent = txt;
-    if ((def.op || "sum") === val) o.selected = true;
-    opSel.appendChild(o);
-  });
-  opSel.addEventListener("change", (e) => {
-    def.op = e.target.value;
-    onChange(def, { rerender: false });
-  });
-  opRow.appendChild(opSel);
-  wrap.appendChild(opRow);
-
-  // 列を選ぶ: リストデータ→業種別4シートの順に、シートごとに見出しを付けてチェックボックスを並べる。
-  // どのシートの列を選んでも、計算方法「合計」ならまとめて足し算される(=複数シートをまたいだ集計が可能)。
-  const colsRow = document.createElement("div");
-  colsRow.className = "metric-def-columns";
-  const groups = getGroupedAvailableColumns();
-  const selected = new Set((def.columns || []).map((c) => columnDefKey(c.source, c.name)));
-  const commitSelection = () => {
-    def.columns = Array.from(selected).map(parseColumnDefKey);
-    onChange(def, { rerender: false });
-  };
-  const hasAnyColumn = groups.some((g) => g.columns.length > 0);
-  if (!hasAnyColumn) {
-    const span = document.createElement("span");
-    span.className = "muted-inline";
-    span.textContent = "数値列が見つかりません";
-    colsRow.appendChild(span);
-  }
-  groups.forEach((g) => {
-    if (g.columns.length === 0) return;
-    const groupWrap = document.createElement("div");
-    groupWrap.className = "metric-def-source-group";
-    const groupLabel = document.createElement("div");
-    groupLabel.className = "metric-def-source-group-label";
-    groupLabel.textContent = g.label;
-    groupWrap.appendChild(groupLabel);
-    const chipsWrap = document.createElement("div");
-    chipsWrap.className = "metric-def-source-group-chips";
-    g.columns.forEach((name) => {
-      const compositeKey = columnDefKey(g.source, name);
-      const idSafe = `coldef-${key}-${compositeKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const lbl = document.createElement("label");
-      lbl.className = "chip";
-      lbl.innerHTML = `<input type="checkbox" id="${idSafe}" ${selected.has(compositeKey) ? "checked" : ""}/> ${escapeHtml(name)}`;
-      lbl.querySelector("input").addEventListener("change", (e) => {
-        if (e.target.checked) selected.add(compositeKey);
-        else selected.delete(compositeKey);
-        commitSelection();
-      });
-      chipsWrap.appendChild(lbl);
-    });
-    groupWrap.appendChild(chipsWrap);
-    colsRow.appendChild(groupWrap);
-  });
-  wrap.appendChild(colsRow);
-
-  const hint = document.createElement("p");
-  hint.className = "muted-inline";
-  hint.textContent =
-    "リストデータ・業種別シートをまたいで、使いたい列に自由にチェックを入れられます。「合計」ならチェックした列をすべて足し算します。" +
-    "「差」「割合」の場合は、チェックした先頭2つの列(1列目→2列目の順、チェックした順番が基準)が使われます。";
-  wrap.appendChild(hint);
-
-  return wrap;
-}
-
-function buildAddCustomMetricForm(onAdd) {
-  const wrap = document.createElement("div");
-  wrap.className = "add-custom-metric-form";
-
-  const title = document.createElement("div");
-  title.className = "control-label";
-  title.textContent = "新しい項目を追加";
-  wrap.appendChild(title);
-
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
-  nameInput.placeholder = "項目名(例: 回収率)";
-  wrap.appendChild(nameInput);
-
-  const status = document.createElement("span");
-  status.className = "muted-inline";
-  wrap.appendChild(status);
-
-  const addBtn = document.createElement("button");
-  addBtn.type = "button";
-  addBtn.className = "btn-secondary";
-  addBtn.textContent = "追加";
-  addBtn.addEventListener("click", () => {
-    const label = nameInput.value.trim();
-    if (!label) {
-      status.textContent = "項目名を入力してください";
-      return;
-    }
-    const key = `custom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    onAdd({ key, label, op: "sum", columns: [] });
-    nameInput.value = "";
-    status.textContent = "";
-  });
-  wrap.appendChild(addBtn);
-  return wrap;
-}
-
-function renderColumnDefsPanel() {
-  const container = $("#column-defs-panel");
-  if (!container) return;
-  if (!state.loaded) {
-    container.innerHTML = `<p class="muted-inline">データ読み込み後に設定できます</p>`;
-    return;
-  }
-  container.innerHTML = "";
-  const defs = getColumnDefs();
-  const customDefs = getCustomMetricDefs();
-
-  BASE_METRIC_KEYS.forEach((meta) => {
-    if (!defs[meta.key]) defs[meta.key] = { op: "sum", columns: [] };
-    const row = buildMetricDefRow(meta.key, meta.label, defs[meta.key], (def, opts) => {
-      saveColumnDefs(defs);
-      if (opts && opts.rerender) renderColumnDefsPanel();
-      afterColumnDefsChanged();
-    });
-    container.appendChild(row);
-  });
-
-  if (customDefs.length > 0) {
-    const customWrap = document.createElement("div");
-    customWrap.className = "custom-metric-list";
-    customDefs.forEach((c) => {
-      const row = buildMetricDefRow(c.key, c.label, c, (def, opts) => {
-        saveCustomMetricDefs(customDefs);
-        if (opts && opts.rerender) renderColumnDefsPanel();
-        afterColumnDefsChanged();
-      }, {
-        removable: true,
-        editableLabel: true,
-        onRemove: () => {
-          const idx = customDefs.findIndex((x) => x.key === c.key);
-          if (idx >= 0) customDefs.splice(idx, 1);
-          if (state.report.visibleColumns) state.report.visibleColumns.delete(c.key);
-          saveCustomMetricDefs(customDefs);
-          saveVisibleColumns();
-          renderColumnDefsPanel();
-          afterColumnDefsChanged();
-        },
-      });
-      customWrap.appendChild(row);
-    });
-    container.appendChild(customWrap);
-  }
-
-  const addForm = buildAddCustomMetricForm((newMetric) => {
-    customDefs.push(newMetric);
-    if (state.report.visibleColumns) state.report.visibleColumns.add(newMetric.key);
-    saveCustomMetricDefs(customDefs);
-    saveVisibleColumns();
-    renderColumnDefsPanel();
-    afterColumnDefsChanged();
-  });
-  container.appendChild(addForm);
-}
-
-$("#column-defs-reset").addEventListener("click", () => {
-  try {
-    localStorage.removeItem(COLUMN_DEFS_STORAGE_KEY);
-  } catch (e) {
-    // 無視(プライベートブラウジング等)
-  }
-  _columnDefsCache = null;
-  ensureColumnDefsSeeded();
-  renderColumnDefsPanel();
-  afterColumnDefsChanged();
-});
 
 function renderVisibleColumnsPanel() {
   const container = $("#visible-columns-panel");
@@ -1739,7 +1440,7 @@ function renderVisibleColumnsPanel() {
   }
   container.innerHTML = "";
   if (!state.report.visibleColumns) ensureVisibleColumnsSeeded();
-  const customDefs = getCustomMetricDefs();
+  const customDefs = [];
   const { categorySheets } = getAreaSheetSet(state.report.area);
   const industryNames = getIndustryNames(getPrimaryIndustrySheet(categorySheets));
   const leftoverCols = getLeftoverListColumns();
@@ -1787,8 +1488,8 @@ function computeAreaReport() {
     };
   }
 
-  const defs = getColumnDefs();
-  const customDefs = getCustomMetricDefs();
+  const defs = computeColumnDefs();
+  const customDefs = [];
   const extraCols = customDefs.map((c) => c.key);
   const customDefMap = Object.fromEntries(customDefs.map((c) => [c.key, c]));
   const industryNames = getIndustryNames(primaryIndustrySheet);
@@ -2170,7 +1871,7 @@ function renderSummaryByList(panel) {
     "(1つも選んでいない場合は4項目すべての合計)。未コール・不在1〜3以上・その他リスト項目・業種別の列は、件数の下に(  )でカッコ書きの割合もあわせて表示します" +
     "(未コール・不在系・業種別は架電可能数に対する割合、その他リスト項目は有効結果に対する割合です)。" +
     "有効率 = 有効結果 ÷ (不在1〜3以上の合計 + 有効結果)。トスアップ率・アポイント率・アプローチNG率・決裁者接触率(旧:主旨NG率)・クロージングNG率はすべて対有効(÷有効結果)。" +
-    "各項目がどの列から数値を拾うか、どの項目を表に表示するかは、上の「項目の定義を設定」「表示する項目を選択」から変更できます(この端末のブラウザにのみ保存されます)。" +
+    "どの項目を表に表示するかは、上の「表示する項目を選択」から変更できます(この端末のブラウザにのみ保存されます)。" +
     "業種別の列(業種:飲食・業種:和食など)は、業種別4シート(未コール・不在1・不在2・不在3以上)の値をそのリスト・業種で合計した架電可能な残量の内訳です。" +
     "セルは、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで文字色が変化します(背景色は付きません)。" +
     "列見出しクリックで昇順・降順に並び替えできます。既定(架電可能数順)の並びでは、同数の行を有効率→トスアップ率→アポイント率の順で自動的に並び替えます。" +
