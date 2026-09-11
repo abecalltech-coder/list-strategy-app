@@ -7,13 +7,41 @@
 
 const CONFIG = window.APP_CONFIG;
 
-// 「有効結果」は、リストデータシートのF列〜AC列(0始まりの列インデックスで5〜28)を
-// 機械的に合計した固定ロジックで計算する(computeColumnDefs参照)。
+// 「有効結果」は、リストデータシートの中から下記の列名に完全一致する列だけを
+// 合計した固定ロジックで計算する(列の位置・並び順が変わっても対応できるよう、
+// 位置ではなく名前で拾う。computeColumnDefs参照)。「不在」は含めない。
 // トスアップ率・アポ率・アプローチNG率・主旨NG率・クロージングNG率は
 // すべてこの「有効結果」に対する割合(対有効)として計算する。
 // 有効率 = 有効結果 ÷ (不在 + 有効結果)。
+const VALID_RESULT_COLUMN_NAMES = [
+  "現アナ",
+  "決裁者不在",
+  "アプローチNG",
+  "主旨NG",
+  "クロージングNG",
+  "電気NG",
+  "SMSNG",
+  "トスアップ",
+  "アポイント",
+  "見込みC",
+  "見込みC(不在)",
+  "見込みB",
+  "見込みB(不在)",
+  "見込みA",
+  "見込みA(不在)",
+  "19時以降対応案件",
+  "土日架電希望案件",
+  "対象外(既契約)",
+  "対象外(建物管理)",
+  "対象外(本社管理)",
+  "対象外(オール電化・太陽光等)",
+  "対象外(高圧)",
+  "対象外(その他)",
+  "アポ禁",
+];
+// その他の項目(その他リストデータ列)を自動検出する際のスキャン開始位置。
+// A〜E列(リスト名・都道府県・D列未コール(生)など識別用の列)は対象外にするための位置。
 const VALID_RESULT_COL_START = 5; // F列(0始まり: A=0, B=1, C=2, D=3, E=4, F=5)
-const VALID_RESULT_COL_END = 28; // AC列(0始まり: ... Z=25, AA=26, AB=27, AC=28)
 
 // 「リストデータ未コール」(業種未コールシート側の未コール数との突き合わせ確認用)は、
 // リストデータシートのD列(0始まり: 3)を機械的に読む。
@@ -150,7 +178,7 @@ function pickCategoryDefaultColumn(title) {
 // 拾うかを毎回自動判定して返す(固定ロジック。ユーザーがブラウザごとに変更することはできない)。
 // - 未コール・不在1〜3以上: 業種別シートの「合計」列(無ければ最後の数値列)
 // - トスアップ・アポ・アプローチNG・主旨NG・クロージングNG: リストデータシートの列名が一致するもの
-// - 有効結果: リストデータシートのF列〜AC列(架電結果が繋がった項目群)を機械的に合計
+// - 有効結果: リストデータシートの中でVALID_RESULT_COLUMN_NAMESの列名に完全一致する列を合計(「不在」は含めない)
 // - リストデータ未コール: リストデータシートのD列をそのまま(業種未コールシート側の未コールとの突き合わせ確認用)
 function computeColumnDefs() {
   const listTitles = getAllSheetTitlesByType("list");
@@ -163,16 +191,6 @@ function computeColumnDefs() {
   const honshiNgDefault = pickDefaultColumn(listNumericOptions, ["主旨NG"], ["主旨NG", "主旨"], []);
   const closingNgDefault = pickDefaultColumn(listNumericOptions, ["クロージングNG"], ["クロージングNG", "クロージング"], []);
 
-  // 有効結果: 従来の「リストデータのF列〜AC列を機械的に合計」という定義を、
-  // 今読み込まれている列名に変換して初期値とする(以降は列名ベースの設定として編集可能)
-  let validCountColumns = [];
-  if (listSheet && state.sheets[listSheet]) {
-    const headers = state.sheets[listSheet].headers;
-    for (let idx = VALID_RESULT_COL_START; idx <= VALID_RESULT_COL_END && idx < headers.length; idx++) {
-      validCountColumns.push(headers[idx]);
-    }
-  }
-
   // columnsは { source, name } の配列(source: "list" | CATEGORY_KEYSのいずれか)。
   // これにより「対象シート」をあらかじめ1つに決めず、複数シートをまたいで列を合計できる。
   const col = (source, name) => (name ? [{ source, name }] : []);
@@ -182,7 +200,8 @@ function computeColumnDefs() {
     const defaultCol = pickCategoryDefaultColumn(sheetTitle);
     defs[c.key] = { op: "sum", columns: col(c.key, defaultCol) };
   });
-  defs.validCount = { op: "sum", columns: validCountColumns.map((name) => ({ source: "list", name })) };
+  // 有効結果: 列名が完全一致するものだけを合計する(位置ではなく名前で拾う。「不在」は含めない)
+  defs.validCount = { op: "sum", columns: VALID_RESULT_COLUMN_NAMES.map((name) => ({ source: "list", name })) };
   defs.tossup = { op: "sum", columns: col("list", tossupDefault) };
   defs.appo = { op: "sum", columns: col("list", appoDefault) };
   defs.approachNg = { op: "sum", columns: col("list", approachNgDefault) };
