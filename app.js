@@ -132,6 +132,9 @@ const BASE_METRIC_KEYS = [
   { key: "approachNg", label: "アプローチNG", source: "list" },
   { key: "honshiNg", label: "主旨NG", source: "list" },
   { key: "closingNg", label: "クロージングNG", source: "list" },
+  // 決裁者接触率(主旨NG+クロージングNG+電気NG+SMSNG+トスアップ+アポイントの合計)の計算にのみ使う内訳
+  { key: "elecNg", label: "電気NG", source: "list" },
+  { key: "smsNg", label: "SMSNG", source: "list" },
 ];
 
 // 集計タブの表に表示できる項目(表示/非表示を選べる項目)の一覧。既定でONの項目。
@@ -190,6 +193,8 @@ function computeColumnDefs() {
   const approachNgDefault = pickDefaultColumn(listNumericOptions, ["アプローチNG"], ["アプローチNG", "アプローチ"], []);
   const honshiNgDefault = pickDefaultColumn(listNumericOptions, ["主旨NG"], ["主旨NG", "主旨"], []);
   const closingNgDefault = pickDefaultColumn(listNumericOptions, ["クロージングNG"], ["クロージングNG", "クロージング"], []);
+  const elecNgDefault = pickDefaultColumn(listNumericOptions, ["電気NG"], ["電気NG"], []);
+  const smsNgDefault = pickDefaultColumn(listNumericOptions, ["SMSNG"], ["SMSNG"], []);
 
   // columnsは { source, name } の配列(source: "list" | CATEGORY_KEYSのいずれか)。
   // これにより「対象シート」をあらかじめ1つに決めず、複数シートをまたいで列を合計できる。
@@ -207,6 +212,8 @@ function computeColumnDefs() {
   defs.approachNg = { op: "sum", columns: col("list", approachNgDefault) };
   defs.honshiNg = { op: "sum", columns: col("list", honshiNgDefault) };
   defs.closingNg = { op: "sum", columns: col("list", closingNgDefault) };
+  defs.elecNg = { op: "sum", columns: col("list", elecNgDefault) };
+  defs.smsNg = { op: "sum", columns: col("list", smsNgDefault) };
 
   // リストデータ未コール: 列名は見ず、D列(0始まりインデックス3)をそのまま使う
   const notCalledListRawCol =
@@ -1108,7 +1115,7 @@ function getLeftoverListColumns() {
   const defs = computeColumnDefs();
   const claimed = { list: new Set() };
   CATEGORY_KEYS.forEach((k) => (claimed[k] = new Set()));
-  [...CATEGORY_KEYS, "validCount", "tossup", "appo", "approachNg", "honshiNg", "closingNg"].forEach((k) => {
+  [...CATEGORY_KEYS, "validCount", "tossup", "appo", "approachNg", "honshiNg", "closingNg", "elecNg", "smsNg"].forEach((k) => {
     ((defs[k] && defs[k].columns) || []).forEach((c) => {
       if (claimed[c.source]) claimed[c.source].add(c.name);
     });
@@ -1313,9 +1320,14 @@ function computeDerived(obj, extraCols, visibleCategoryKeys) {
   obj.validRate = ratioOrNull(obj.validCount, totalAbsent + obj.validCount);
   obj.tossupRate = ratioOrNull(obj.tossup, obj.validCount);
   obj.appoRate = ratioOrNull(obj.appo, obj.validCount);
-  // アプローチNG率・決裁者接触率(旧:主旨NG率)・クロージングNG率(いずれも対有効 = ÷有効結果)
+  // アプローチNG率・クロージングNG率(対有効 = ÷有効結果)。決裁者接触率のみ下記の通り別の計算式
   obj.approachNgRate = ratioOrNull(obj.approachNg, obj.validCount);
-  obj.honshiNgRate = ratioOrNull(obj.honshiNg, obj.validCount);
+  // 決裁者接触率 = (主旨NG+クロージングNG+電気NG+SMSNG+トスアップ+アポイントの合計) ÷ リスト総数。
+  // 「リスト総数」は表示項目の選択に関係なく、未コール・不在1・不在2・不在3以上(常に全4項目)+有効結果の合計。
+  obj.totalListCount = CATEGORY_KEYS.reduce((sum, k) => sum + (obj[k] || 0), 0) + (obj.validCount || 0);
+  const decisionMakerContacted =
+    (obj.honshiNg || 0) + (obj.closingNg || 0) + (obj.elecNg || 0) + (obj.smsNg || 0) + (obj.tossup || 0) + (obj.appo || 0);
+  obj.honshiNgRate = ratioOrNull(decisionMakerContacted, obj.totalListCount);
   obj.closingNgRate = ratioOrNull(obj.closingNg, obj.validCount);
   obj.extraPct = {};
   extraCols.forEach((c) => {
@@ -1604,13 +1616,13 @@ function computeAreaReport() {
 
   const grand = { extra: {}, industry: {}, leftover: {} };
   CATEGORY_KEYS.forEach((k) => (grand[k] = 0));
-  ["validCount", "tossup", "appo", "approachNg", "honshiNg", "closingNg"].forEach((k) => (grand[k] = 0));
+  ["validCount", "tossup", "appo", "approachNg", "honshiNg", "closingNg", "elecNg", "smsNg"].forEach((k) => (grand[k] = 0));
   extraCols.forEach((c) => (grand.extra[c] = 0));
   leftoverCols.forEach((c) => (grand.leftover[c.name] = 0));
   industryNames.forEach((n) => (grand.industry[n] = 0));
   listRows.forEach((lr) => {
     CATEGORY_KEYS.forEach((k) => (grand[k] += lr.all[k]));
-    ["validCount", "tossup", "appo", "approachNg", "honshiNg", "closingNg"].forEach((k) => (grand[k] += lr.all[k]));
+    ["validCount", "tossup", "appo", "approachNg", "honshiNg", "closingNg", "elecNg", "smsNg"].forEach((k) => (grand[k] += lr.all[k]));
     extraCols.forEach((c) => (grand.extra[c] += lr.all.extra[c]));
     leftoverCols.forEach((c) => (grand.leftover[c.name] += lr.all.leftover[c.name]));
     industryNames.forEach((n) => (grand.industry[n] += lr.all.industry[n] || 0));
@@ -1907,7 +1919,8 @@ function renderSummaryByList(panel) {
     "行はリスト名単位(そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。架電可能数 = 「表示する項目を選択」でONにしている未コール・不在1・不在2・不在3以上の合計です" +
     "(1つも選んでいない場合は4項目すべての合計)。未コール・不在1〜3以上・その他リスト項目・業種別の列は、件数の下に(  )でカッコ書きの割合もあわせて表示します" +
     "(未コール・不在系・業種別は架電可能数に対する割合、その他リスト項目は有効結果に対する割合です)。" +
-    "有効率 = 有効結果 ÷ (不在1〜3以上の合計 + 有効結果)。トスアップ率・アポイント率・アプローチNG率・決裁者接触率(旧:主旨NG率)・クロージングNG率はすべて対有効(÷有効結果)。" +
+    "有効率 = 有効結果 ÷ (不在1〜3以上の合計 + 有効結果)。トスアップ率・アポイント率・アプローチNG率・クロージングNG率は対有効(÷有効結果)。" +
+    "決裁者接触率 = (主旨NG+クロージングNG+電気NG+SMSNG+トスアップ+アポイントの合計) ÷ リスト総数(未コール・不在1〜3以上・有効結果の合計)。" +
     "どの項目を表に表示するかは、上の「表示する項目を選択」から変更できます(この端末のブラウザにのみ保存されます)。" +
     "業種別の列(業種:飲食・業種:和食など)は、業種別4シート(未コール・不在1・不在2・不在3以上)の値をそのリスト・業種で合計した架電可能な残量の内訳です。" +
     "セルは、その列内での相対的な高さに応じて赤(低い)→緑(普通)→青(高い)のグラデーションで文字色が変化します(背景色は付きません)。" +
