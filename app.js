@@ -14,7 +14,6 @@ const CONFIG = window.APP_CONFIG;
 // すべてこの「有効結果」に対する割合(対有効)として計算する。
 // 有効率 = 有効結果 ÷ (不在 + 有効結果)。
 const VALID_RESULT_COLUMN_NAMES = [
-  "現アナ",
   "決裁者不在",
   "アプローチNG",
   "主旨NG",
@@ -1318,7 +1317,8 @@ function computeDerived(obj, extraCols, visibleCategoryKeys) {
   const totalAbsent = (obj.absent1 || 0) + (obj.absent2 || 0) + (obj.absent3plus || 0);
   // 有効率 = 有効結果 ÷ (不在(1〜3以上の合計) + 有効結果)
   obj.validRate = ratioOrNull(obj.validCount, totalAbsent + obj.validCount);
-  obj.tossupRate = ratioOrNull(obj.tossup, obj.validCount);
+  // トスアップ率 = (トスアップ + アポイントの合計) ÷ 有効結果(2026-09-21に計算方法を変更。旧: トスアップ ÷ 有効結果)
+  obj.tossupRate = ratioOrNull((obj.tossup || 0) + (obj.appo || 0), obj.validCount);
   obj.appoRate = ratioOrNull(obj.appo, obj.validCount);
   // アプローチNG率・クロージングNG率(対有効 = ÷有効結果)。決裁者接触率のみ下記の通り別の計算式
   obj.approachNgRate = ratioOrNull(obj.approachNg, obj.validCount);
@@ -1919,7 +1919,7 @@ function renderSummaryByList(panel) {
     "行はリスト名単位(そのエリア内の全都道府県合計)。行をクリックすると都道府県別の内訳を開閉できます。架電可能数 = 「表示する項目を選択」でONにしている未コール・不在1・不在2・不在3以上の合計です" +
     "(1つも選んでいない場合は4項目すべての合計)。未コール・不在1〜3以上・その他リスト項目・業種別の列は、件数の下に(  )でカッコ書きの割合もあわせて表示します" +
     "(未コール・不在系・業種別は架電可能数に対する割合、その他リスト項目は有効結果に対する割合です)。" +
-    "有効率 = 有効結果 ÷ (不在1〜3以上の合計 + 有効結果)。トスアップ率・アポイント率・アプローチNG率・クロージングNG率は対有効(÷有効結果)。" +
+    "有効率 = 有効結果 ÷ (不在1〜3以上の合計 + 有効結果)。トスアップ率 = (トスアップ+アポイントの合計) ÷ 有効結果。アポイント率・アプローチNG率・クロージングNG率は対有効(÷有効結果)。" +
     "決裁者接触率 = (主旨NG+クロージングNG+電気NG+SMSNG+トスアップ+アポイントの合計) ÷ リスト総数(未コール・不在1〜3以上・有効結果の合計)。" +
     "どの項目を表に表示するかは、上の「表示する項目を選択」から変更できます(この端末のブラウザにのみ保存されます)。" +
     "業種別の列(業種:飲食・業種:和食など)は、業種別4シート(未コール・不在1・不在2・不在3以上)の値をそのリスト・業種で合計した架電可能な残量の内訳です。" +
